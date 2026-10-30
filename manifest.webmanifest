@@ -1,0 +1,31 @@
+{
+  "id": "./",
+  "name": "Rota 2028",
+  "short_name": "Rota",
+  "description": "Günlük program, haftalık düzen ve uzun vadeli plan tek yerde. İnternetsiz de çalışır.",
+  "lang": "tr",
+  "dir": "ltr",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#080D17",
+  "theme_color": "#080D17",
+  "categories": ["productivity"],
+  "prefer_related_applications": false,
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "screenshots": [
+    {"src": "screenshots/bugun.png", "sizes": "1080x2340", "type": "image/png", "form_factor": "narrow", "label": "Bugün: günün programı ve şimdi kartı"},
+    {"src": "screenshots/plan.png", "sizes": "1080x2340", "type": "image/png", "form_factor": "narrow", "label": "Plan: rota, kapı göstergeleri ve aşamalar"}
+  ],
+  "shortcuts": [
+    {"name": "Bugün", "short_name": "Bugün", "description": "Bugünün programı", "url": "./?tab=bugun", "icons": [{"src": "icons/shortcut-today.png", "sizes": "96x96", "type": "image/png"}]},
+    {"name": "Hafta", "short_name": "Hafta", "description": "Haftalık görünüm", "url": "./?tab=hafta", "icons": [{"src": "icons/shortcut-week.png", "sizes": "96x96", "type": "image/png"}]},
+    {"name": "Plan", "short_name": "Plan", "description": "Uzun vadeli plan", "url": "./?tab=plan", "icons": [{"src": "icons/shortcut-plan.png", "sizes": "96x96", "type": "image/png"}]},
+    {"name": "Yeni iş", "short_name": "Yeni iş", "description": "Hızlıca iş ekle", "url": "./?action=add", "icons": [{"src": "icons/shortcut-add.png", "sizes": "96x96", "type": "image/png"}]}
+  ]
+}

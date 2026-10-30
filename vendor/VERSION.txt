@@ -1,0 +1,1 @@
+@supabase/supabase-js 2.118.0 (dist/umd/supabase.js, npm pack 2026-10-30)
