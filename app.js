@@ -1,5 +1,7 @@
 /* Rota arayüzü: Bugün, Hafta, Plan, Liste. Görünümler RotaDB anlık görüntülerinden çizilir;
-   her yazma yerelde hemen uygulanır, eşitleme arka planda RotaSync ile yürür. */
+   her yazma yerelde hemen uygulanır, eşitleme arka planda RotaSync ile yürür.
+   Ortak alan varsa plan, aşamalar, ortak işler, göstergeler, fikirler ve haftalık değerlendirmeler ortaklarla paylaşılır;
+   günlük program, günler, özel işler ve kişisel ayarlar (prefs) kullanıcıya özel kalır. */
 (() => {
 'use strict';
 const DOW_L = ['', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
@@ -9,6 +11,8 @@ const MON_S = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 
 const TABS = ['bugun', 'hafta', 'plan', 'liste'];
 const DEF_WHO = {ben: 'Ben', ortak: 'Ortak', ikimiz: 'İkimiz'};
 const DEF_START = '2026-11-01', DEF_MONTHS = 24;
+const SHARED = ['tasks', 'phases', 'ideas', 'weeks', 'metrics', 'settings'];
+const CURRENCIES = ['$', '€', '₺'];
 const VERSION = String(self.APP_VERSION || '');
 const nf = new Intl.NumberFormat('tr-TR', {maximumFractionDigits: 0});
 const nf1 = new Intl.NumberFormat('tr-TR', {maximumFractionDigits: 1});
@@ -19,9 +23,10 @@ const X_ICON = SVG('<path d="M6 6l12 12M18 6 6 18"/>');
 const EYE = SVG('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>', 1.8);
 const EYE_OFF = SVG('<path d="M3 3l18 18M10.6 5.6A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-3.1 3.9M6.3 7.3C3.9 9 2.5 12 2.5 12S6 18.5 12 18.5c1.6 0 3-.4 4.2-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/>', 1.8);
 
-const S = {tasks: [], routine: [], phases: [], ideas: [], days: {}, weeks: {}, metrics: null, settings: null, got: {},
+const S = {tasks: [], shTasks: [], myTasks: [], routine: [], phases: [], ideas: [], days: {}, weeks: {}, metrics: null, settings: null, prefs: null, got: {},
   tab: 'bugun', weekOff: 0, selDay: null, tplEdit: false, open: {}, preset: {}, lastKey: '', pop: null, enter: false,
-  toastFn: null, user: null, running: false, sync: null, action: null, sheet: '', akeys: null};
+  toastFn: null, user: null, running: false, sync: null, action: null, sheet: '', akeys: null, cfgC: null,
+  space: null, me: null, spaceName: '', listFilter: 'all'};
 try { const t = localStorage.getItem('rota-tab'); if (TABS.includes(t)) S.tab = t; } catch (e) { /* depolama kapalı */ }
 let db = null;
 
@@ -51,8 +56,18 @@ function dueLabel(key) {
 }
 function greeting() { const h = new Date().getHours(); return h < 5 ? 'İyi geceler' : h < 12 ? 'Günaydın' : h < 18 ? 'İyi günler' : h < 23 ? 'İyi akşamlar' : 'İyi geceler'; }
 
-/* ---------- ayarlar (settings/app belgesi) ---------- */
-const cfg = () => S.settings || {};
+/* ---------- ayarlar (ortak settings/app + kişisel prefs/app) ---------- */
+// Kişisel ayarlar ortak olanın üstüne yazılır; alan (area) listeleri birleşir.
+function cfg() {
+  if (S.cfgC) return S.cfgC;
+  const s = S.settings || {}, p = S.prefs || {};
+  const areas = {...(isObj(s.areas) ? s.areas : {}), ...(isObj(p.areas) ? p.areas : {})};
+  const order = [...(Array.isArray(s.areaOrder) ? s.areaOrder : []), ...(Array.isArray(p.areaOrder) ? p.areaOrder : [])];
+  return (S.cfgC = {...s, ...p, areas, areaOrder: [...new Set(order)]});
+}
+function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+const currency = () => CURRENCIES.includes(cfg().currency) ? cfg().currency : '€';
+const money = v => `${nf.format(Number(v) || 0)} ${currency()}`;
 function planStart() { const s = cfg().planStart; return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) ? parse(s) : parse(DEF_START); }
 const planMonths = () => { const n = Math.round(Number(cfg().planMonths)); return n >= 1 && n <= 120 ? n : DEF_MONTHS; };
 const planMonth = d => { const p = planStart(); return (d.getFullYear() - p.getFullYear()) * 12 + d.getMonth() - p.getMonth() + 1; };
@@ -81,7 +96,32 @@ const focusArea = () => { const f = cfg().focusArea; return typeof f === 'string
 const defaultArea = () => focusArea() || areaKeys()[0] || '';
 const incLabel = () => focusArea() ? `${areaLabel(focusArea())} net geliri` : 'Net gelir';
 const whoMap = () => { const w = cfg().who; return {ben: (w && w.ben) || DEF_WHO.ben, ortak: (w && w.ortak) || DEF_WHO.ortak, ikimiz: (w && w.ikimiz) || DEF_WHO.ikimiz}; };
-const whoLabel = k => whoMap()[k] || String(k);
+
+/* ---------- ortaklar ----------
+   Ortak alanda "kim" alanı kalıcı üye anahtarı tutar (ör. mehmet, yasin, ikimiz); "ben" ve "ortak" eski tek kişilik
+   kayıtlardan kalır ve bakan kişiye göre çözülür. */
+const shared = () => !!S.space;
+function members() { const m = (S.settings || {}).members; return isObj(m) ? m : {}; }
+const partners = () => Object.keys(members()).filter(k => k !== S.me);
+const partner = () => partners()[0] || '';
+const isMe = k => !k || k === 'ben' || (!!S.me && k === S.me);
+const normWho = k => !shared() ? (k || 'ben') : (!k || k === 'ben') ? S.me : k === 'ortak' ? (partner() || k) : k;
+function whoLabel(k) {
+  if (!shared()) return whoMap()[k] || String(k);
+  const w = normWho(k);
+  if (w === 'ikimiz') return 'İkimiz';
+  if (w === S.me) return 'Ben';
+  return members()[w] || cap(String(w));
+}
+const memberName = k => members()[k] || (k === S.me ? 'Ben' : cap(String(k || '')));
+// İş bana mı düşüyor: özel işler, bana atananlar ve ikimizinkiler.
+const forMe = t => t._mine || isMe(normWho(t.who)) || t.who === 'ikimiz';
+const forPartner = t => !t._mine && shared() && (partners().includes(normWho(t.who)) || t.who === 'ikimiz');
+function whoOptions() {
+  if (!shared()) return Object.entries(whoMap());
+  return [[S.me, 'Ben'], ...partners().map(k => [k, memberName(k)]), ['ikimiz', 'İkimiz']];
+}
+const taskPath = t => `${t._col || 'tasks'}/${t.id}`;
 
 /* ---------- yardımcılar ---------- */
 const $ = s => document.querySelector(s);
@@ -100,6 +140,8 @@ function dayCount(key, d) {
   return {total: bl.length, done: bl.filter(b => isDone(key, b.id)).length};
 }
 const phases = () => [...S.phases].sort(byOrder);
+// Ortak alanda her ortağın haftalık değerlendirmesi ayrı belgedir: aynı anda yazınca birbirini ezmez.
+const reviewId = (monKey, who = S.me) => shared() ? `${monKey}_${who}` : monKey;
 const tasksOf = pid => S.tasks.filter(t => t.phase === pid).sort(byOrder);
 function phaseDone(p) {
   const ts = tasksOf(p.id), gates = ts.filter(t => t.kind === 'gate'), set = gates.length ? gates : ts;
@@ -145,7 +187,7 @@ function syncText(st) {
   if (s === 'wait') return n ? [`${n} değişiklik bekliyor`, 'Buluta gönderiliyor.'] : ['Eşitleniyor', 'Veriler buluttan alınıyor.'];
   return [`Eşitlendi · ${ago(st.lastSyncAt)}`, st.realtime ? 'Diğer cihazlardaki değişiklikler anında gelir.' : 'Veriler bu cihazda ve bulutta.'];
 }
-const initial = () => { const e = (S.user && S.user.email) || ''; return e ? e.charAt(0).toLocaleUpperCase('tr-TR') : 'R'; };
+const initial = () => { const e = (shared() && members()[S.me]) || (S.user && S.user.email) || ''; return e ? e.charAt(0).toLocaleUpperCase('tr-TR') : 'R'; };
 const meBtn = () => `<button class="me-btn" type="button" data-act="settings" aria-label="${esc('Hesap ve ayarlar · ' + syncText(S.sync)[0])}"><span aria-hidden="true">${esc(initial())}</span><i class="sync-dot s-${syncState(S.sync)}" aria-hidden="true"></i></button>`;
 const top = eb => `<div class="topline"><p class="eyebrow">${eb}</p>${meBtn()}</div>`;
 function syncUI() {
@@ -166,7 +208,9 @@ function taskRow(t, o = {}) {
   const [dl, cls] = t.due ? dueLabel(t.due) : ['', ''];
   const meta = [`${dot(t.area)}${esc(t.area ? areaLabel(t.area) : 'Kişisel')}`];
   if (dl && !t.done) meta.push(`<span class="${cls}">${esc(dl)}</span>`);
-  if (t.who && t.who !== 'ben') meta.push(`<span class="who">${esc(whoLabel(t.who))}</span>`);
+  if (t._mine && shared()) meta.push('<span class="who priv">Özel</span>');
+  else if (t.who && !isMe(normWho(t.who)) && !(t.done && t.doneBy && normWho(t.who) === t.doneBy)) meta.push(`<span class="who">${esc(whoLabel(t.who))}</span>`);
+  if (t.done && shared() && t.doneBy && t.doneBy !== S.me) meta.push(`<span class="by">${esc(memberName(t.doneBy))} bitirdi</span>`);
   return `<div class="row${t.done ? ' is-done' : ''}${t.kind === 'gate' ? ' is-gate' : ''}">
     <button class="chk${S.pop === t.id ? ' pop' : ''}" type="button" data-act="toggleTask" data-id="${esc(t.id)}" aria-pressed="${!!t.done}" aria-label="${esc(t.title)}"></button>
     <button class="row-main" type="button" data-act="editTask" data-id="${esc(t.id)}"><span class="row-title">${esc(t.title)}</span>
@@ -230,16 +274,30 @@ function viewToday() {
       ${[1, 2, 3, 4, 5].map(n => `<button class="en${lit(n)}" type="button" data-act="energy" data-date="${key}" data-n="${n}" aria-pressed="${dd.energy === n}" aria-label="Enerji ${n}">${n}</button>`).join('')}</div>
   </section>`;
 
-  const tk = S.tasks.filter(t => (!t.done && t.due && t.due <= key) || (t.done && t.doneAt === key && t.due))
+  const tk = S.tasks.filter(t => forMe(t) && ((!t.done && t.due && t.due <= key) || (t.done && t.doneAt === key && t.due)))
     .sort((a, b) => (a.done - b.done) || String(a.due || '').localeCompare(String(b.due || '')) || byOrder(a, b));
   h += `<section class="card"><div class="card-head"><h2>Bugünün işleri</h2><span class="count">${tk.filter(t => t.done).length}/${tk.length}</span></div>
     ${tk.length ? tk.map(t => taskRow(t)).join('') : '<p class="empty">Bugüne iş atanmadı. Aşağıdan birini bugüne al ya da + ile ekle.</p>'}</section>`;
   if (fp) {
-    const next = tasksOf(fp.id).filter(t => !t.done && !t.due && t.kind !== 'gate').slice(0, 4);
+    const next = tasksOf(fp.id).filter(t => !t.done && !t.due && t.kind !== 'gate' && forMe(t)).slice(0, 4);
     h += `<section class="card"><div class="card-head"><h2>Sıradaki</h2><span class="count">${esc(fp.no)} · ${esc(fp.title)}</span></div>
-      ${next.length ? next.map(t => taskRow(t, {pull: true})).join('') : '<p class="empty">Bu aşamada tarihsiz açık iş kalmadı.</p>'}</section>`;
+      ${next.length ? next.map(t => taskRow(t, {pull: true})).join('') : `<p class="empty">Bu aşamada ${shared() ? 'sana düşen ' : ''}tarihsiz açık iş kalmadı.</p>`}</section>`;
   }
+  h += partnerCard(key);
   return h;
+}
+
+// Ortağın son 7 günde bitirdikleri ve şu anki aşamada ona düşen açık işler.
+function partnerCard(key) {
+  if (!shared() || !partners().length) return '';
+  const since = iso(addDays(today(), -6)), fp = focusPhase();
+  const done = S.tasks.filter(t => !t._mine && t.done && t.doneBy && t.doneBy !== S.me && String(t.doneAt || '') >= since && t.doneAt <= key)
+    .sort((a, b) => String(b.doneAt).localeCompare(String(a.doneAt))).slice(0, 5);
+  const open = fp ? tasksOf(fp.id).filter(t => !t.done && forPartner(t) && normWho(t.who) !== 'ikimiz').length : 0;
+  const names = partners().map(memberName).join(', ');
+  return `<section class="card"><div class="card-head"><h2>Ortaktan</h2><span class="count">${esc(names)} · son 7 gün</span></div>
+    ${done.length ? done.map(t => taskRow(t)).join('') : '<p class="empty">Son 7 günde bitirilen ortak iş yok.</p>'}
+    ${fp && open ? `<p class="hint">${esc(fp.no)} aşamasında ${esc(names)} için ${open} açık iş var.</p>` : ''}</section>`;
 }
 
 function viewWeek() {
@@ -278,10 +336,18 @@ function viewWeek() {
     ${tasks.length ? `<div class="day-tasks">${tasks.map(t => taskRow(t)).join('')}</div>` : ''}
     <button class="add-inline" type="button" data-act="add" data-due="${sel}">+ Bu güne iş ekle</button></section>`;
 
-  const rv = S.weeks[monKey];
+  const rv = S.weeks[reviewId(monKey)];
+  const rvBody = r => r && (r.good || r.stuck || r.next) ? `<dl>${r.good ? `<div><dt>İyi giden</dt><dd>${esc(r.good)}</dd></div>` : ''}${r.stuck ? `<div><dt>Takılan</dt><dd>${esc(r.stuck)}</dd></div>` : ''}${r.next ? `<div><dt>Gelecek haftanın önceliği</dt><dd>${esc(r.next)}</dd></div>` : ''}</dl>` : '';
+  let rvHtml;
+  if (shared()) {
+    const parts = [S.me, ...partners()].map(k => {
+      const body = rvBody(S.weeks[reviewId(monKey, k)]);
+      return `<div class="rv-person"><p class="rv-who">${esc(k === S.me ? 'Sen' : memberName(k))}</p>${body || `<p class="note">${k === S.me ? 'Henüz yazmadın.' : 'Henüz yazmadı.'}</p>`}</div>`;
+    });
+    rvHtml = parts.join('');
+  } else rvHtml = rvBody(rv) || '<p class="note">Pazar, 15 dk: ne iyi gitti, nerede takıldın, gelecek haftanın 3 önceliği.</p>';
   h += `<section class="card review"><div class="card-head"><h2>Haftalık değerlendirme</h2><button class="link" type="button" data-act="review" data-week="${monKey}">${rv ? 'Düzenle' : 'Yaz'}</button></div>
-    ${rv && (rv.good || rv.stuck || rv.next) ? `<dl>${rv.good ? `<div><dt>İyi giden</dt><dd>${esc(rv.good)}</dd></div>` : ''}${rv.stuck ? `<div><dt>Takılan</dt><dd>${esc(rv.stuck)}</dd></div>` : ''}${rv.next ? `<div><dt>Gelecek haftanın önceliği</dt><dd>${esc(rv.next)}</dd></div>` : ''}</dl>`
-      : '<p class="note">Pazar, 15 dk: ne iyi gitti, nerede takıldın, gelecek haftanın 3 önceliği.</p>'}</section>`;
+    ${rvHtml}</section>`;
   h += `<button class="ghost" type="button" data-act="tplEdit">${SVG('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>')}Haftalık şablonu düzenle</button>`;
   return h;
 }
@@ -311,7 +377,7 @@ function viewPlan() {
       <div class="track" style="grid-template-columns:repeat(${n}, minmax(0,1fr))" role="img" aria-label="${n} ayın ${Math.max(0, Math.min(n, m))}. ayı">${Array.from({length: n}, (_, i) => {
         const k = i + 1; return `<span class="tick${gateSet.has(k) ? ' gt' : ''}${k < m ? ' past' : k === m ? ' now' : ''}"></span>`; }).join('')}</div></div>
     <div class="track-ends"><span>${MON_S[ps0.getMonth()]} ${ps0.getFullYear()}</span><span>${MON_S[end.getMonth()]} ${end.getFullYear()}</span></div>
-    ${gates.length ? `<div class="stops" style="grid-template-columns:repeat(${Math.min(gates.length, 4)}, minmax(0,1fr))">${gates.map(p => `<div class="stop">${stamp(phaseDone(p))}<strong>${esc(p.gateShort || '')}</strong></div>`).join('')}</div>` : ''}</section>`;
+    ${gates.length ? `<div class="stops" style="grid-template-columns:repeat(${Math.min(gates.length, 4)}, minmax(0,1fr))">${gates.map(p => `<div class="stop">${stamp(phaseDone(p))}<strong>${esc(p.gateShort || p.gateLabel || '')}</strong></div>`).join('')}</div>` : ''}</section>`;
 
   const mt = S.metrics || {}, sav = Number(mt.savingsEur) || 0, tgt = Number(mt.savingsTarget) || 0, cli = Number(mt.clients) || 0, cliT = Number(mt.clientsTarget) || 3;
   const inc = mt.income && typeof mt.income === 'object' ? mt.income : {}, it = Number(mt.incomeTarget) || 0;
@@ -323,51 +389,62 @@ function viewPlan() {
     if (meets(v)) streak++; else if (k > 0 || v != null) break;
   }
   h += `<section class="card"><div class="card-head"><h2>Kapı göstergeleri</h2><button class="link" type="button" data-act="metrics">Güncelle</button></div>
-    <div class="metric" style="padding-top:4px"><div class="m-top"><span class="k">Birikim</span><span class="v">${nf.format(sav)} €${tgt ? ` <small>/ ${nf.format(tgt)} €</small>` : ''}</span></div>
-      ${tgt ? `<div class="bar"><i style="width:${Math.max(0, Math.min(100, sav / tgt * 100)).toFixed(1)}%"></i><b style="left:25%"></b><b style="left:50%"></b><b style="left:75%"></b></div>
-      <div class="ticks"><span style="left:25%">%25</span><span style="left:50%">%50</span><span style="left:75%">%75</span></div>` : ''}</div>
-    <div class="metric pair"><div><span class="k">Ödeme yapan müşteri</span><span class="v">${nf.format(cli)} <small>/ ${nf.format(cliT)}</small></span></div>
+    ${tgt ? `<div class="metric" style="padding-top:4px"><div class="m-top"><span class="k">Birikim</span><span class="v">${money(sav)} <small>/ ${money(tgt)}</small></span></div>
+      <div class="bar"><i style="width:${Math.max(0, Math.min(100, sav / tgt * 100)).toFixed(1)}%"></i><b style="left:25%"></b><b style="left:50%"></b><b style="left:75%"></b></div>
+      <div class="ticks"><span style="left:25%">%25</span><span style="left:50%">%50</span><span style="left:75%">%75</span></div></div>` : ''}
+    <div class="metric pair"${tgt ? '' : ' style="padding-top:4px"'}><div><span class="k">Ödeme yapan müşteri</span><span class="v">${nf.format(cli)} <small>/ ${nf.format(cliT)}</small></span></div>
       <div><span class="k">Eşik üstü ay, üst üste</span><span class="v">${streak} <small>/ 3</small></span></div></div>
-    <div class="metric"><span class="k">${esc(incLabel())}${it ? ` · eşik ${nf.format(it)} €/ay` : ''}</span>
-      <div class="months">${months.map(x => { const v = inc[monthKey(x)]; return `<div class="mo${meets(v) ? ' ok' : ''}"><span class="k">${MON_S[x.getMonth()]} ${x.getFullYear()}</span><span class="v">${v != null && v !== '' ? nf.format(Number(v) || 0) + ' €' : '–'}</span></div>`; }).join('')}</div></div>
+    <div class="metric"><span class="k">${esc(incLabel())}${it ? ` · eşik ${money(it)}/ay` : ''}</span>
+      <div class="months">${months.map(x => { const v = inc[monthKey(x)]; return `<div class="mo${meets(v) ? ' ok' : ''}"><span class="k">${MON_S[x.getMonth()]} ${x.getFullYear()}</span><span class="v">${v != null && v !== '' ? money(v) : '–'}</span></div>`; }).join('')}</div></div>
   </section>`;
 
   ps.forEach(p => {
     const ts = tasksOf(p.id), tasks = ts.filter(t => t.kind !== 'gate'), gts = ts.filter(t => t.kind === 'gate');
     const open = S.open[p.id] ?? (fp && p.id === fp.id), complete = phaseDone(p), dn = tasks.filter(t => t.done).length;
+    const no = String(p.no ?? ''), digits = no.replace(/\D/g, ''), hasMonth = p.start != null && p.start !== '';
     h += `<section class="phase${complete ? ' is-complete' : ''}"><button class="phase-head" type="button" data-act="phase" data-id="${esc(p.id)}" aria-expanded="${!!open}">
-      <span class="ph-no">${esc(String(p.no ?? '').replace(/\D/g, ''))}</span>
-      <span class="ph-t"><strong>${esc(p.title)}</strong><small>${esc(p.label)} · Ay ${esc(p.start === p.end ? p.start : `${p.start}–${p.end}`)}</small>
+      <span class="ph-no${digits ? '' : ' txt'}">${esc(digits || no.slice(0, 3))}</span>
+      <span class="ph-t"><strong>${esc(p.title)}</strong><small>${esc(p.label || '')}${hasMonth ? `${p.label ? ' · ' : ''}Ay ${esc(p.start === p.end || p.end == null || p.end === '' ? p.start : `${p.start}–${p.end}`)}` : ''}</small>
         <span class="ph-prog"><i style="width:${tasks.length ? dn / tasks.length * 100 : 0}%"></i></span></span>
       <span class="ph-r">${dn}/${tasks.length}${CHEV}</span></button>
       ${open ? `<div class="phase-body">${tasks.map(t => taskRow(t, {note: true})).join('')}
         <button class="add-inline" type="button" data-act="add" data-phase="${esc(p.id)}">+ İş ekle</button>
         ${gts.length ? `<div class="gate"><div class="gate-head">${stamp(complete, true)}<div><p class="eyebrow">Kapı</p><strong>${esc(p.gateLabel || '')}</strong></div></div>${gts.map(t => taskRow(t)).join('')}</div>` : ''}
+        <div class="phase-tools"><button class="link" type="button" data-act="editPhase" data-id="${esc(p.id)}">Aşamayı düzenle</button></div>
       </div>` : ''}</section>`;
   });
+  h += `<div class="plan-tools"><button class="ghost" type="button" data-act="addPhase">${SVG('<path d="M12 5v14M5 12h14"/>')}Aşama ekle</button>
+    <button class="ghost" type="button" data-act="planSettings">${SVG('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>')}Planı düzenle</button></div>`;
   return h;
 }
 
 function viewList() {
-  const k = todayKey(), open = S.tasks.filter(t => !t.done);
+  const f = shared() ? S.listFilter : 'all';
+  const pick = t => f === 'me' ? forMe(t) : f === 'partner' ? forPartner(t) : true;
+  const k = todayKey(), open = S.tasks.filter(t => !t.done && pick(t));
   const late = open.filter(t => t.due && t.due < k).sort((a, b) => String(a.due).localeCompare(String(b.due)));
   const now = open.filter(t => t.due === k).sort(byOrder);
   const soon = open.filter(t => t.due && t.due > k).sort((a, b) => String(a.due).localeCompare(String(b.due)) || byOrder(a, b));
   const inbox = open.filter(t => !t.due && !t.phase).sort(byOrder);
-  const done = S.tasks.filter(t => t.done).sort((a, b) => String(b.doneAt || '').localeCompare(String(a.doneAt || ''))).slice(0, 12);
+  const allDone = S.tasks.filter(t => t.done && pick(t));
+  const done = allDone.sort((a, b) => String(b.doneAt || '').localeCompare(String(a.doneAt || ''))).slice(0, 12);
   const sec = (title, list, empty) => `<section class="card"><div class="card-head"><h2>${title}</h2><span class="count">${list.length}</span></div>
     ${list.length ? list.map(t => taskRow(t, {note: true})).join('') : `<p class="empty">${empty}</p>`}</section>`;
   let h = `<header class="head">${top(`${open.length} açık iş`)}<div class="hero"><div><h1>Liste</h1><p class="sub">Aşama işleri Plan’da. Burada tarihli işler, gelen kutusu ve fikirler.</p></div></div></header>`;
+  if (shared() && partners().length) {
+    const opts = [['all', 'Hepsi'], ['me', 'Benim'], ['partner', partners().map(memberName).join(', ')]];
+    h += `<div class="segc three list-filter" role="group" aria-label="Kimin işleri">${opts.map(([v, l]) => `<button type="button" data-act="listFilter" data-v="${v}" aria-pressed="${f === v}">${esc(l)}</button>`).join('')}</div>`;
+  }
   if (late.length) h += sec('Gecikenler', late, '');
   h += sec('Bugün', now, 'Bugüne tarihli iş yok.');
   h += sec('Yaklaşanlar', soon, 'Tarihli iş yok.');
   h += sec('Gelen kutusu', inbox, 'Boş. + ile hızlıca iş ekle, aşamasını sonra seç.');
   const ideas = [...S.ideas].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   h += `<section class="card"><div class="card-head"><h2>Fikir defteri</h2><button class="link" type="button" data-act="addIdea">Fikir ekle</button></div>
-    <p class="note">Proje limiti: 1 para + 1 tutku. Yeni fikir plana girmez, burada bekler.</p>
-    ${ideas.length ? ideas.map(i => `<div class="row"><div class="row-main"><span class="row-title">${esc(i.text)}</span><span class="row-meta">${i.createdAt ? esc(shortDate(String(i.createdAt).slice(0, 10))) : ''}</span></div>
+    <p class="note">Proje limiti: 1 para + 1 tutku. Yeni fikir plana girmez, burada bekler.${shared() ? ' Fikir defteri ortak.' : ''}</p>
+    ${ideas.length ? ideas.map(i => `<div class="row"><div class="row-main"><span class="row-title">${esc(i.text)}</span><span class="row-meta">${shared() && i.by && i.by !== S.me ? `${esc(memberName(i.by))}<span class="sep">·</span>` : ''}${i.createdAt ? esc(shortDate(String(i.createdAt).slice(0, 10))) : ''}</span></div>
       <button class="mini" type="button" data-act="delIdea" data-id="${esc(i.id)}">Sil</button></div>`).join('') : '<p class="empty">Henüz fikir yok.</p>'}</section>`;
-  if (done.length) h += `<section class="card"><div class="card-head"><h2>Son bitenler</h2><span class="count">${S.tasks.filter(t => t.done).length} toplam</span></div>${done.map(t => taskRow(t)).join('')}</section>`;
+  if (done.length) h += `<section class="card"><div class="card-head"><h2>Son bitenler</h2><span class="count">${allDone.length} toplam</span></div>${done.map(t => taskRow(t)).join('')}</section>`;
   return h;
 }
 
@@ -414,14 +491,25 @@ function localDay(k, patch) {
   render();
 }
 function localTask(id, patch) { S.tasks = S.tasks.map(t => t.id === id ? {...t, ...patch} : t); render(); }
+// Ekrana özel alanlar (_col, _mine) belgeye yazılmaz.
+const plain = t => { const {id: _i, _col: _c, _mine: _m, ...rest} = t; return rest; };
 function listen() {
   const fail = name => e => { console.warn('Rota: dinleyici durdu', name, e); toast('Veri okunamadı. Uygulamayı yeniden aç.'); };
-  const col = (name, key) => db.collection(name).onSnapshot(s => { S[key] = s.docs.map(x => ({id: x.id, ...x.data()})); S.got[key] = true; S.akeys = null; render(); }, fail(name));
-  col('tasks', 'tasks'); col('routine', 'routine'); col('phases', 'phases'); col('ideas', 'ideas');
+  const col = (name, key, after) => db.collection(name).onSnapshot(s => {
+    S[key] = s.docs.map(x => ({id: x.id, ...x.data()})); S.got[key] = true; if (after) after(); S.akeys = null; render();
+  }, fail(name));
+  // Ortak işler (tasks) ve özel işler (mytasks) ekranda tek listedir; her iş hangi koleksiyondan geldiğini taşır.
+  const mergeTasks = () => {
+    S.tasks = [...S.shTasks.map(t => ({...t, _col: 'tasks'})), ...S.myTasks.map(t => ({...t, _col: 'mytasks', _mine: true}))];
+    S.got.tasks = !!(S.got.shTasks && S.got.myTasks);
+  };
+  col('tasks', 'shTasks', mergeTasks); col('mytasks', 'myTasks', mergeTasks);
+  col('routine', 'routine'); col('phases', 'phases'); col('ideas', 'ideas');
   db.collection('weeks').onSnapshot(s => { const o = {}; s.docs.forEach(x => { o[x.id] = x.data(); }); S.weeks = o; render(); }, fail('weeks'));
   db.collection('days').orderBy('date', 'desc').limit(150).onSnapshot(s => { const o = {}; s.docs.forEach(x => { o[x.id] = x.data(); }); S.days = o; render(); }, fail('days'));
   db.doc('metrics/main').onSnapshot(s => { S.metrics = s.exists ? s.data() : null; render(); }, fail('metrics'));
-  db.doc('settings/app').onSnapshot(s => { S.settings = s.exists ? s.data() : null; S.akeys = null; render(); }, fail('settings'));
+  db.doc('settings/app').onSnapshot(s => { S.settings = s.exists ? s.data() : null; S.akeys = null; S.cfgC = null; render(); }, fail('settings'));
+  db.doc('prefs/app').onSnapshot(s => { S.prefs = s.exists ? s.data() : null; S.akeys = null; S.cfgC = null; render(); }, fail('prefs'));
 }
 
 /* ---------- geçmiş (Android geri tuşu) ---------- */
@@ -534,19 +622,26 @@ document.addEventListener('click', e => {
 
 function taskForm(t) {
   const isNew = !t, p = S.preset;
-  t = t || {title: '', note: '', due: p.due || '', phase: p.phase || '', area: defaultArea(), who: 'ben', kind: 'task'};
-  return `<form id="f-task" data-id="${isNew ? '' : esc(t.id)}" autocomplete="off">${head(isNew ? 'Yeni iş' : 'İşi düzenle')}${isNew ? modeSwitch('task') : ''}
+  t = t || {title: '', note: '', due: p.due || '', phase: p.phase || '', area: defaultArea(), who: shared() ? S.me : 'ben', kind: 'task'};
+  const priv = shared() && !!t._mine, who = normWho(t.who);
+  const vis = shared() ? `<div class="fld"><span>Kimler görür</span><div class="seg two">
+      <label><input type="radio" name="vis" value="ortak"${priv ? '' : ' checked'}><span>Ortak plan</span></label>
+      <label><input type="radio" name="vis" value="ben"${priv ? ' checked' : ''}><span>Sadece ben</span></label></div></div>` : '';
+  const opts = whoOptions();
+  return `<form id="f-task" class="${priv ? 'is-private' : ''}" data-id="${isNew ? '' : esc(t.id)}" autocomplete="off">${head(isNew ? 'Yeni iş' : 'İşi düzenle')}${isNew ? modeSwitch('task') : ''}
     <label class="fld"><span>Ne yapılacak?</span><input class="big" id="f-title" name="title" required maxlength="200" value="${esc(t.title)}" placeholder="Örn. Teklif metnini bitir"></label>
+    ${vis}
     <div class="fld"><span>Tarih</span><div class="chips">${dateChips(t.due)}</div><input type="date" id="f-due" name="due" value="${esc(t.due || '')}" aria-label="Tarih seç"></div>
-    <div class="grid2"><label class="fld"><span>Aşama</span><select id="f-phase" name="phase"><option value="">Gelen kutusu</option>${phases().map(x => `<option value="${esc(x.id)}"${x.id === t.phase ? ' selected' : ''}>${esc(x.no)}: ${esc(x.title)}</option>`).join('')}</select></label>
+    <div class="grid2"><label class="fld shared-only"><span>Aşama</span><select id="f-phase" name="phase"><option value="">Gelen kutusu</option>${phases().map(x => `<option value="${esc(x.id)}"${x.id === t.phase ? ' selected' : ''}>${esc(x.no)}: ${esc(x.title)}</option>`).join('')}</select></label>
       <label class="fld"><span>Alan</span><select id="f-area" name="area">${areaOpts(t.area)}</select></label></div>
-    <div class="fld"><span>Kim</span><div class="seg">${Object.entries(whoMap()).map(([v, l]) => `<label><input type="radio" name="who" value="${v}"${(t.who || 'ben') === v ? ' checked' : ''}><span>${esc(l)}</span></label>`).join('')}</div></div>
-    <label class="check"><input type="checkbox" id="f-gate" name="gate"${t.kind === 'gate' ? ' checked' : ''}> Kapı şartı (aşamanın geçiş koşulu)</label>
+    <div class="fld shared-only"><span>Kim</span><div class="seg${opts.length === 2 ? ' two' : ''}">${opts.map(([v, l]) => `<label><input type="radio" name="who" value="${esc(v)}"${who === v ? ' checked' : ''}><span>${esc(l)}</span></label>`).join('')}</div></div>
+    <label class="check shared-only"><input type="checkbox" id="f-gate" name="gate"${t.kind === 'gate' ? ' checked' : ''}> Kapı şartı (aşamanın geçiş koşulu)</label>
     <label class="fld"><span>Not</span><textarea id="f-note" name="note" rows="2" maxlength="1000">${esc(t.note || '')}</textarea></label>
+    ${!isNew && shared() && t.createdBy && t.createdBy !== S.me ? `<p class="note">${esc(memberName(t.createdBy))} ekledi.</p>` : ''}
     <div class="actions">${isNew ? '' : `<button type="button" class="danger" data-act="delTask" data-id="${esc(t.id)}">Sil</button>`}<button type="submit" class="primary">Kaydet</button></div></form>`;
 }
 const ideaForm = () => `<form id="f-idea" autocomplete="off">${head('Yeni fikir')}${modeSwitch('idea')}
-  <p class="note">Proje limiti: 1 para + 1 tutku. Fikir burada bekler, plana girmez.</p>
+  <p class="note">Proje limiti: 1 para + 1 tutku. Fikir burada bekler, plana girmez.${shared() ? ' Ortağın da görür.' : ''}</p>
   <label class="fld"><span>Fikir</span><textarea id="i-text" name="text" rows="3" required maxlength="1000"></textarea></label>
   <div class="actions"><button type="submit" class="primary">Kaydet</button></div></form>`;
 function blockForm(b, presetDow) {
@@ -563,9 +658,9 @@ function blockForm(b, presetDow) {
     <div class="actions">${isNew ? '' : `<button type="button" class="danger" data-act="delBlock" data-id="${esc(b.id)}">Sil</button>`}<button type="submit" class="primary">Kaydet</button></div></form>`;
 }
 function reviewForm(monKey) {
-  const r = S.weeks[monKey] || {}, mon = parse(monKey), sun = addDays(mon, 6), en = weekEnergy(mon);
+  const r = S.weeks[reviewId(monKey)] || {}, mon = parse(monKey), sun = addDays(mon, 6), en = weekEnergy(mon);
   return `<form id="f-review" data-week="${esc(monKey)}">${head('Haftalık değerlendirme')}
-    <p class="note">${mon.getDate()} ${MON_S[mon.getMonth()]} – ${sun.getDate()} ${MON_S[sun.getMonth()]} · enerji ortalaması ${en ? nf1.format(en.avg) : '–'} / 5</p>
+    <p class="note">${mon.getDate()} ${MON_S[mon.getMonth()]} – ${sun.getDate()} ${MON_S[sun.getMonth()]} · enerji ortalaması ${en ? nf1.format(en.avg) : '–'} / 5${shared() ? ' · ortağın da görür' : ''}</p>
     <label class="fld"><span>Ne iyi gitti?</span><textarea id="r-good" name="good" rows="2" maxlength="2000">${esc(r.good || '')}</textarea></label>
     <label class="fld"><span>Nerede takıldım?</span><textarea id="r-stuck" name="stuck" rows="2" maxlength="2000">${esc(r.stuck || '')}</textarea></label>
     <label class="fld"><span>Gelecek haftanın 3 önceliği</span><textarea id="r-next" name="next" rows="3" maxlength="2000">${esc(r.next || '')}</textarea></label>
@@ -574,12 +669,41 @@ function reviewForm(monKey) {
 function metricsForm() {
   const mt = S.metrics || {}, d = today(), inc = mt.income || {}, it = Number(mt.incomeTarget) || 0;
   const ms = Array.from({length: 6}, (_, k) => new Date(d.getFullYear(), d.getMonth() - k, 1));
+  const cur = currency();
   return `<form id="f-metrics">${head('Göstergeleri güncelle')}
-    <label class="fld"><span>Birikim, toplam (€)</span><input type="number" id="m-sav" name="sav" min="0" step="1" inputmode="decimal" value="${esc(mt.savingsEur ?? 0)}"></label>
+    ${Number(mt.savingsTarget) ? `<label class="fld"><span>Birikim, toplam (${cur})</span><input type="number" id="m-sav" name="sav" min="0" step="1" inputmode="decimal" value="${esc(mt.savingsEur ?? 0)}"></label>` : ''}
     <label class="fld"><span>Ödeme yapan müşteri sayısı</span><input type="number" id="m-cli" name="cli" min="0" step="1" inputmode="numeric" value="${esc(mt.clients ?? 0)}"></label>
     <div class="grid2"><label class="fld"><span>Ay</span><select id="m-month" name="month">${ms.map(x => `<option value="${monthKey(x)}">${MON_L[x.getMonth()]} ${x.getFullYear()}</option>`).join('')}</select></label>
-      <label class="fld"><span>${esc(incLabel())} (€)</span><input type="number" id="m-inc" name="inc" min="0" step="1" inputmode="decimal" placeholder="Girilmedi" value="${esc(inc[monthKey(d)] ?? '')}"></label></div>
-    <p class="note">O ayın toplam net geliri.${it ? ` Eşik ${nf.format(it)} €/ay.` : ''}</p>
+      <label class="fld"><span>${esc(incLabel())} (${cur})</span><input type="number" id="m-inc" name="inc" min="0" step="1" inputmode="decimal" placeholder="Girilmedi" value="${esc(inc[monthKey(d)] ?? '')}"></label></div>
+    <p class="note">O ayın toplam net geliri.${it ? ` Eşik ${money(it)}/ay.` : ''}${shared() ? ' Göstergeler ortak.' : ''}</p>
+    <div class="actions"><button type="submit" class="primary">Kaydet</button></div></form>`;
+}
+function phaseForm(p) {
+  const isNew = !p;
+  p = p || {no: `Aşama ${S.phases.length + 1}`, title: '', label: '', start: '', end: '', gateLabel: '', gateMonth: ''};
+  const n = planMonths(), num = v => (v == null ? '' : esc(v));
+  return `<form id="f-phase" data-id="${isNew ? '' : esc(p.id)}" autocomplete="off">${head(isNew ? 'Yeni aşama' : 'Aşamayı düzenle')}
+    <div class="grid2"><label class="fld"><span>Kısa ad</span><input id="ph-no" name="no" required maxlength="20" value="${esc(p.no || '')}" placeholder="Hafta 5"></label>
+      <label class="fld"><span>Tarih aralığı</span><input id="ph-label" name="label" maxlength="40" value="${esc(p.label || '')}" placeholder="1–7 Aralık"></label></div>
+    <label class="fld"><span>Başlık</span><input class="big" id="ph-title" name="title" required maxlength="80" value="${esc(p.title || '')}" placeholder="Örn. İlk teklifler"></label>
+    <div class="grid2"><label class="fld"><span>Başladığı ay (1–${n})</span><input type="number" id="ph-start" name="start" min="1" max="${n}" step="1" inputmode="numeric" value="${num(p.start)}" placeholder="Boş"></label>
+      <label class="fld"><span>Bittiği ay</span><input type="number" id="ph-end" name="end" min="1" max="${n}" step="1" inputmode="numeric" value="${num(p.end)}" placeholder="Boş"></label></div>
+    <label class="fld"><span>Kapı (aşamanın geçiş koşulu)</span><input id="ph-gate" name="gateLabel" maxlength="60" value="${esc(p.gateLabel || '')}" placeholder="Örn. İlk ücretli iş"></label>
+    <label class="fld"><span>Kapının rota çizgisindeki ayı</span><input type="number" id="ph-gm" name="gateMonth" min="1" max="${n}" step="1" inputmode="numeric" value="${num(p.gateMonth)}" placeholder="Boş: çizgide görünmez"></label>
+    <p class="note">Kapı şartlarını aşamanın içine "Kapı şartı" işaretli iş olarak ekle.</p>
+    <div class="actions">${isNew ? '' : `<button type="button" class="danger" data-act="delPhase" data-id="${esc(p.id)}">Sil</button>`}<button type="submit" class="primary">Kaydet</button></div></form>`;
+}
+function planForm() {
+  const c = S.settings || {}, mt = S.metrics || {}, cur = currency();
+  return `<form id="f-plan" autocomplete="off">${head('Planı düzenle')}
+    <label class="fld"><span>Plan adı</span><input class="big" id="pl-title" name="title" required maxlength="60" value="${esc(c.planTitle || 'Plan')}"></label>
+    <label class="fld"><span>Kısa açıklama</span><textarea id="pl-sub" name="sub" rows="2" maxlength="200">${esc(c.planSub || '')}</textarea></label>
+    <div class="grid2"><label class="fld"><span>Başlangıç</span><input type="date" id="pl-start" name="start" value="${esc(iso(planStart()))}"></label>
+      <label class="fld"><span>Süre, ay</span><input type="number" id="pl-months" name="months" min="1" max="120" step="1" inputmode="numeric" value="${planMonths()}"></label></div>
+    <div class="grid2"><label class="fld"><span>Aylık gelir eşiği (${cur})</span><input type="number" id="pl-inc" name="inc" min="0" step="1" inputmode="decimal" placeholder="Boş" value="${esc(mt.incomeTarget ?? '')}"></label>
+      <label class="fld"><span>Müşteri hedefi</span><input type="number" id="pl-cli" name="cli" min="1" step="1" inputmode="numeric" value="${esc(mt.clientsTarget ?? 3)}"></label></div>
+    <div class="fld"><span>Para birimi</span><div class="seg">${CURRENCIES.map(x => `<label><input type="radio" name="cur" value="${x}"${x === cur ? ' checked' : ''}><span>${x}</span></label>`).join('')}</div></div>
+    ${shared() ? '<p class="note">Plan ortak: değişikliği ortağın da görür.</p>' : ''}
     <div class="actions"><button type="submit" class="primary">Kaydet</button></div></form>`;
 }
 
@@ -602,7 +726,10 @@ function settingsSheet() {
     <div class="set-card"><i class="sync-dot s-${st}" id="setDot" aria-hidden="true"></i><div class="set-sync" role="status"><strong id="setLine">${esc(l1)}</strong><small id="setSub">${esc(l2)}</small></div>
       <button class="btn2${S.sync && S.sync.syncing ? ' busy' : ''}" type="button" data-act="syncNow" id="syncBtn"><span>Şimdi eşitle</span></button></div>
     <div id="setUpdate">${updateCard()}</div><div id="setInstall">${installBtn()}</div>
+    ${shared() ? `<div class="set-card space-card"><div class="set-sync"><strong>Ortak alan · ${esc(S.spaceName || 'Ortak')}</strong>
+      <small>${esc([S.me, ...partners()].map(k => k === S.me ? `${memberName(k)} (sen)` : memberName(k)).join(', '))}. Plan, işler, göstergeler, fikirler ve haftalık değerlendirmeler ortak; günlük program, enerji ve “Sadece ben” işleri sana özel.</small></div></div>` : ''}
     <div class="set-list">
+      <button class="set-row" type="button" data-act="planSettings"><span>Planı düzenle</span>${CHEV_R}</button>
       <button class="set-row" type="button" data-act="pwSheet"><span>Şifreyi değiştir</span>${CHEV_R}</button>
       <button class="set-row out" type="button" data-act="logout"><span>Çıkış yap</span></button>
     </div>
@@ -638,6 +765,7 @@ async function doLogout(el) {
   const id = S.user && S.user.id;
   // Önce eşitleme durur ve yerel veri silinir, sonra oturum kapanır.
   try { if (id) await window.RotaSync.clear(id); } catch (e) { /* önemsiz */ }
+  try { if (id) localStorage.removeItem(memKey(id)); } catch (e) { /* önemsiz */ }
   try { await window.RotaAuth.signOut(); } catch (e) { /* yerel oturum yine silinir */ }
   try { localStorage.removeItem('rota-tab'); history.replaceState(null, '', location.pathname); } catch (e) { /* önemsiz */ }
   location.replace(location.pathname);
@@ -701,11 +829,13 @@ function arm(el, label, fn) {
   setTimeout(() => { if (el.isConnected) { delete el.dataset.armed; el.classList.remove('armed'); el.textContent = old; } }, 3500);
 }
 function toggleTask(task) {
-  const id = task.id, v = !task.done, patch = {done: v, doneAt: v ? todayKey() : null}, back = {done: !!task.done, doneAt: task.doneAt ?? null};
+  const id = task.id, path = taskPath(task), v = !task.done;
+  const patch = {done: v, doneAt: v ? todayKey() : null, doneBy: v ? (S.me || null) : null};
+  const back = {done: !!task.done, doneAt: task.doneAt ?? null, doneBy: task.doneBy ?? null};
   if (v) { S.pop = id; buzz(); }
   localTask(id, patch);
-  write('tasks/' + id, () => db.doc('tasks/' + id).update(patch));
-  if (v) toast('Tamamlandı', () => { localTask(id, back); write('tasks/' + id, () => db.doc('tasks/' + id).update(back)); });
+  write(path, () => db.doc(path).update(patch));
+  if (v) toast('Tamamlandı', () => { localTask(id, back); write(path, () => db.doc(path).update(back)); });
 }
 function openAdd(ds) {
   const due = ds.due || (!ds.phase && S.tab === 'bugun' ? todayKey() : !ds.phase && S.tab === 'hafta' && S.selDay ? S.selDay : '');
@@ -724,7 +854,7 @@ document.addEventListener('click', e => {
     case 'modeIdea': case 'addIdea': openSheet(ideaForm(), '#i-text', 'idea'); break;
     case 'editTask': if (task) openSheet(taskForm(task), null, 'task'); break;
     case 'toggleTask': if (task) toggleTask(task); break;
-    case 'pullToday': if (task) { localTask(id, {due: todayKey()}); write('tasks/' + id, () => db.doc('tasks/' + id).update({due: todayKey()})); toast('Bugüne alındı'); } break;
+    case 'pullToday': if (task) { const path = taskPath(task); localTask(id, {due: todayKey()}); write(path, () => db.doc(path).update({due: todayKey()})); toast('Bugüne alındı'); } break;
     case 'toggleBlock': {
       const k = el.dataset.date, v = !isDone(k, id);
       if (v) { S.pop = k + ':' + id; buzz(); }
@@ -744,11 +874,22 @@ document.addEventListener('click', e => {
     case 'metrics': openSheet(metricsForm(), null, 'metrics'); break;
     case 'delIdea': arm(el, 'Emin misin?', () => write('ideas/' + id, () => db.doc('ideas/' + id).delete())); break;
     case 'delTask': if (task) arm(el, 'Emin misin? Sil', () => {
-      const {id: _x, ...copy} = task; closeSheet();
+      const copy = plain(task), path = taskPath(task); closeSheet();
       S.tasks = S.tasks.filter(t => t.id !== id); render();
-      write('tasks/' + id, () => db.doc('tasks/' + id).delete());
-      toast('Silindi', () => write('tasks/' + id, () => db.doc('tasks/' + id).set(copy)));
+      write(path, () => db.doc(path).delete());
+      toast('Silindi', () => write(path, () => db.doc(path).set(copy)));
     }); break;
+    case 'listFilter': S.listFilter = el.dataset.v || 'all'; draw(); break;
+    case 'addPhase': openSheet(phaseForm(null), '#ph-title', 'phase'); break;
+    case 'editPhase': { const p = S.phases.find(x => x.id === id); if (p) openSheet(phaseForm(p), null, 'phase'); break; }
+    case 'delPhase': arm(el, 'Emin misin? Sil', () => {
+      // Aşamanın işleri silinmez, gelen kutusuna düşer.
+      const orphans = S.tasks.filter(t => t.phase === id);
+      closeSheet();
+      orphans.forEach(t => { const path = taskPath(t); write(path, () => db.doc(path).update({phase: null, kind: 'task'})); });
+      write('phases/' + id, () => db.doc('phases/' + id).delete()).then(ok => ok && toast(orphans.length ? `Silindi · ${orphans.length} iş gelen kutusunda` : 'Silindi'));
+    }); break;
+    case 'planSettings': openSheet(planForm(), null, 'plan'); break;
     case 'delBlock': arm(el, 'Emin misin? Sil', () => { closeSheet(); write('routine/' + id, () => db.doc('routine/' + id).delete()).then(ok => ok && toast('Silindi')); }); break;
     case 'setDue': $('#f-due').value = el.dataset.v; el.parentElement.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c === el))); break;
     case 'toastAct': { const fn = S.toastFn; clearTimeout(toastT); hideToast(); if (fn) fn(); break; }
@@ -775,6 +916,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   if (e.target.id === 'm-month') { const inc = (S.metrics || {}).income || {}; $('#m-inc').value = inc[e.target.value] ?? ''; }
+  if (e.target.name === 'vis' && e.target.form) e.target.form.classList.toggle('is-private', e.target.value === 'ben');
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#sheetWrap').hidden) closeSheet(); });
 document.addEventListener('submit', e => {
@@ -784,13 +926,23 @@ document.addEventListener('submit', e => {
   const fd = new FormData(f), str = k => String(fd.get(k) ?? '').trim();
   if (f.id === 'f-task') {
     const title = str('title'); if (!title) return;
-    const data = {title, note: str('note'), due: str('due') || null, phase: str('phase') || null, area: str('area') || defaultArea(), who: str('who') || 'ben', kind: fd.get('gate') ? 'gate' : 'task'};
-    const id = f.dataset.id; closeSheet();
-    if (id) { localTask(id, data); write('tasks/' + id, () => db.doc('tasks/' + id).update(data)).then(ok => ok && toast('Kaydedildi')); }
-    else write('tasks/new', () => db.collection('tasks').add({...data, done: false, doneAt: null, createdAt: new Date().toISOString(), order: Date.now()})).then(ok => ok && toast('Eklendi'));
+    const priv = shared() && str('vis') === 'ben', colName = priv ? 'mytasks' : 'tasks';
+    const data = {title, note: str('note'), due: str('due') || null, phase: priv ? null : str('phase') || null, area: str('area') || defaultArea(),
+      who: priv ? S.me : str('who') || (shared() ? S.me : 'ben'), kind: !priv && fd.get('gate') ? 'gate' : 'task'};
+    const id = f.dataset.id, old = id ? S.tasks.find(t => t.id === id) : null; closeSheet();
+    if (old && old._col !== colName) {
+      // Görünürlük değişti: belge diğer koleksiyona taşınır (aynı kimlikle).
+      const moved = {...plain(old), ...data};
+      S.tasks = S.tasks.filter(t => t.id !== id); render();
+      write(`${colName}/${id}`, () => db.doc(`${colName}/${id}`).set(moved))
+        .then(ok => ok && write(taskPath(old), () => db.doc(taskPath(old)).delete()))
+        .then(ok => ok && toast(priv ? 'Sadece sana görünür' : 'Ortak plana taşındı'));
+    } else if (old) { localTask(id, data); write(taskPath(old), () => db.doc(taskPath(old)).update(data)).then(ok => ok && toast('Kaydedildi')); }
+    else write(colName + '/new', () => db.collection(colName).add({...data, done: false, doneAt: null, createdAt: new Date().toISOString(), createdBy: S.me || null, order: Date.now()}))
+      .then(ok => ok && toast('Eklendi'));
   } else if (f.id === 'f-idea') {
     const text = str('text'); if (!text) return; closeSheet();
-    write('ideas/new', () => db.collection('ideas').add({text, createdAt: new Date().toISOString()})).then(ok => ok && toast('Fikir defterine eklendi'));
+    write('ideas/new', () => db.collection('ideas').add({text, by: S.me || null, createdAt: new Date().toISOString()})).then(ok => ok && toast('Fikir defterine eklendi'));
   } else if (f.id === 'f-block') {
     const title = str('title'); if (!title) return;
     const data = {title, dow: Number(str('dow')), start: str('start'), end: str('end'), area: str('area') || defaultArea(), min: Number(str('min')) || 0, core: !!fd.get('core')};
@@ -799,13 +951,36 @@ document.addEventListener('submit', e => {
     else write('routine/new', () => db.collection('routine').add({...data, order: Date.now()})).then(ok => ok && toast('Eklendi'));
   } else if (f.id === 'f-review') {
     const w = f.dataset.week; closeSheet();
-    upsert('weeks/' + w, {good: str('good'), stuck: str('stuck'), next: str('next'), updatedAt: new Date().toISOString()}, {week: w}).then(ok => ok && toast('Kaydedildi'));
+    upsert('weeks/' + reviewId(w), {good: str('good'), stuck: str('stuck'), next: str('next'), updatedAt: new Date().toISOString()}, {week: w, by: S.me || null})
+      .then(ok => ok && toast('Kaydedildi'));
   } else if (f.id === 'f-metrics') {
     const incRaw = str('inc');
-    const patch = {savingsEur: Math.max(0, Number(str('sav')) || 0), clients: Math.max(0, Math.round(Number(str('cli')) || 0)),
-      income: {[str('month')]: incRaw === '' ? null : Math.max(0, Number(incRaw) || 0)}};
+    const patch = {clients: Math.max(0, Math.round(Number(str('cli')) || 0)), income: {[str('month')]: incRaw === '' ? null : Math.max(0, Number(incRaw) || 0)}};
+    if (fd.has('sav')) patch.savingsEur = Math.max(0, Number(str('sav')) || 0);
     closeSheet();
     upsert('metrics/main', patch, {}).then(ok => ok && toast('Kaydedildi'));
+  } else if (f.id === 'f-phase') {
+    const title = str('title'), no = str('no'); if (!title || !no) return;
+    const n = planMonths(), month = k => { const v = Math.round(Number(str(k))); return str(k) !== '' && v >= 1 && v <= n ? v : null; };
+    const gateLabel = str('gateLabel'), gm = month('gateMonth');
+    const data = {no, title, label: str('label'), start: month('start'), end: month('end') ?? month('start'), gateLabel, gateShort: gateLabel, gateMonth: gateLabel ? gm : null};
+    const id = f.dataset.id; closeSheet();
+    if (id) write('phases/' + id, () => db.doc('phases/' + id).update(data)).then(ok => ok && toast('Kaydedildi'));
+    else {
+      const order = S.phases.reduce((m, p) => Math.max(m, Number(p.order) || 0), -1) + 1;
+      write('phases/new', () => db.collection('phases').add({...data, order})).then(ok => ok && toast('Aşama eklendi'));
+    }
+  } else if (f.id === 'f-plan') {
+    const title = str('title'); if (!title) return;
+    const months = Math.round(Number(str('months'))), start = str('start'), inc = str('inc'), cli = Math.round(Number(str('cli')));
+    const sPatch = {planTitle: title, planSub: str('sub'), currency: CURRENCIES.includes(str('cur')) ? str('cur') : currency()};
+    if (/^\d{4}-\d{2}-\d{2}$/.test(start)) sPatch.planStart = start.slice(0, 8) + '01';
+    if (months >= 1 && months <= 120) sPatch.planMonths = months;
+    const mPatch = {incomeTarget: inc === '' ? null : Math.max(0, Number(inc) || 0)};
+    if (cli >= 1) mPatch.clientsTarget = cli;
+    closeSheet();
+    Promise.all([upsert('settings/app', sPatch, {}), upsert('metrics/main', mPatch, {clients: 0, income: {}})])
+      .then(r => r.every(Boolean) && toast('Plan kaydedildi'));
   } else if (f.id === 'f-pw') {
     const a = $('#p-new').value, b = $('#p-new2').value, er = $('#p-err'), btn = $('#p-btn');
     const fail = m => { er.textContent = m; er.hidden = false; };
@@ -830,19 +1005,50 @@ addEventListener('online', () => {
   window.RotaSync.flush().then(st => { if (st.online && !st.pending && !st.error) toast('Bağlantı geldi. Eşitlendi.'); });
 });
 
+/* ---------- ortak alan üyeliği ----------
+   Üyelik cihazda saklanır: açılış ağ beklemez, çevrimdışı da aynı alanla açılır. Arka planda tazelenir;
+   değişmişse uygulama yeniden yüklenir. */
+const memKey = uid => 'rota-space-' + uid;
+function cachedMembership(uid) {
+  try { const m = JSON.parse(localStorage.getItem(memKey(uid)) || 'null'); return m && typeof m === 'object' ? m : null; } catch (e) { return null; }
+}
+// Başarılı sorguda {space, slug, spaceName} ya da {space: null}; ağ/sunucu hatasında null.
+async function fetchMembership(client, uid, ms) {
+  try {
+    const q = client.from('space_members').select('space,slug,name,spaces(name)').eq('user_id', uid).order('created_at').limit(1);
+    const r = await Promise.race([q, new Promise(res => setTimeout(() => res({error: {message: 'timeout'}}), ms))]);
+    if (r.error) return null;
+    const row = (r.data || [])[0];
+    return row ? {space: row.space, slug: row.slug, spaceName: (row.spaces && row.spaces.name) || ''} : {space: null};
+  } catch (e) { return null; }
+}
+const sameMem = (a, b) => (a && a.space || null) === (b && b.space || null) && (a && a.slug || null) === (b && b.slug || null);
+
 /* ---------- dışa açık ---------- */
 window.RotaUI = Object.freeze({esc, pwField, busy, toast});
 window.RotaApp = Object.freeze({
-  start(user, client) {
+  async start(user, client) {
     if (S.running) return;
     S.running = true; S.user = user; db = window.RotaDB;
+    let mem = cachedMembership(user.id);
+    if (!mem && navigator.onLine) {
+      mem = await fetchMembership(client, user.id, 5000);
+      if (mem) { try { localStorage.setItem(memKey(user.id), JSON.stringify(mem)); } catch (e) { /* önemsiz */ } }
+    }
+    S.space = (mem && mem.space) || null; S.me = S.space ? mem.slug : null; S.spaceName = (mem && mem.spaceName) || '';
     S.sync = window.RotaSync.status();
     window.RotaSync.onStatus(st => { S.sync = st; syncUI(); });
-    window.RotaSync.start({client, userId: user.id}).catch(e => console.warn('Rota: eşitleme başlatılamadı', e));
+    window.RotaSync.start({client, userId: user.id, space: S.space, shared: SHARED}).catch(e => console.warn('Rota: eşitleme başlatılamadı', e));
     initNav();
     listen();
     draw();
     showInstall();
+    if (navigator.onLine) fetchMembership(client, user.id, 15000).then(fresh => {
+      if (!fresh) return;
+      try { localStorage.setItem(memKey(user.id), JSON.stringify(fresh)); } catch (e) { /* önemsiz */ }
+      if (!sameMem(fresh, mem)) location.reload();
+      else if (fresh.spaceName && fresh.spaceName !== S.spaceName) S.spaceName = fresh.spaceName;
+    });
   },
   running: () => S.running,
   userId: () => S.user && S.user.id,

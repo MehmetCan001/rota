@@ -2,6 +2,8 @@
    - Bütün belgeler bellekte tutulur ve kullanıcı başına IndexedDB'ye yazılır (açılış anında, çevrimdışı tam çalışır).
    - Her yazma önce yerelde uygulanır, sonra kalıcı bir giden kutusuna (outbox) eklenir ve sırayla sunucuya gönderilir.
    - Sunucu verisi kazanır; bekleyen yazması olan belgeler hariç.
+   - Ortak alan: `shared` listesindeki koleksiyonlar alanın (space) sahipliğinde durur, ortaklar aynı belgeleri görür;
+     diğer koleksiyonlar kullanıcıya özeldir. Alan yoksa her şey kişiseldir.
    API yüzeyi claude.ai db yeteneğiyle aynıdır: RotaDB.collection(...) / RotaDB.doc('kol/id'). */
 (() => {
 'use strict';
@@ -16,7 +18,9 @@ const META = Object.freeze({fromCache: false, hasPendingWrites: false});
 const dbErr = (code, message) => Object.assign(new Error(message), {code});
 
 /* ---------- durum ---------- */
-let client = null, uid = null, adapter = null;
+let client = null, uid = null, space = null, shared = new Set(), adapter = null;
+// Belgenin sunucudaki sahibi: ortak koleksiyonsa alan, değilse kullanıcı.
+const ownerOf = col => (space && shared.has(col) ? space : uid);
 let store = new Map();            // 'kol/id' -> {col, id, data (dondurulmuş), ts, snap}
 let outbox = [];                  // [{seq, key, col, id, op: 'put'|'del', data}]
 let seqN = 0, ctr = 0;
@@ -334,7 +338,7 @@ async function haveSession() {
 async function send(batch) {
   const puts = batch.filter(o => o.op === 'put'), dels = batch.filter(o => o.op === 'del');
   if (puts.length) {
-    const r = await client.from('docs').upsert(puts.map(o => ({owner: uid, col: o.col, id: o.id, data: o.data})), {onConflict: 'owner,col,id'})
+    const r = await client.from('docs').upsert(puts.map(o => ({owner: ownerOf(o.col), col: o.col, id: o.id, data: o.data})), {onConflict: 'owner,col,id'})
       .select('col,id,updated_at');
     const k = kindOf(r.error, r.status);
     if (k !== 'ok') return k;
@@ -350,7 +354,7 @@ async function send(batch) {
   const byCol = new Map();
   dels.forEach(o => { if (!byCol.has(o.col)) byCol.set(o.col, []); byCol.get(o.col).push(o.id); });
   for (const [col, ids] of byCol) {
-    const r = await client.from('docs').delete().eq('owner', uid).eq('col', col).in('id', ids);
+    const r = await client.from('docs').delete().eq('owner', ownerOf(col)).eq('col', col).in('id', ids);
     const k = kindOf(r.error, r.status);
     if (k !== 'ok') return k;
     ids.forEach(id => tomb.set(col + '/' + id, Date.now() + 15000));
@@ -440,14 +444,15 @@ function pull(again = false) {
     if (!(await haveSession())) return false;
     const start = ctr, rows = [];
     for (let from = 0; ; from += PAGE) {
-      const r = await client.from('docs').select('col,id,data,updated_at').order('col').order('id').range(from, from + PAGE - 1);
+      const r = await client.from('docs').select('owner,col,id,data,updated_at').order('owner').order('col').order('id').range(from, from + PAGE - 1);
       const k = kindOf(r.error, r.status);
       if (k !== 'ok') {
         if (k === 'net') netDown = true; else lastError = k === 'auth' ? 'auth' : 'server';
         return false;
       }
-      rows.push(...(r.data || []));
-      if (!r.data || r.data.length < PAGE) break;
+      // Yalnız koleksiyonun beklenen sahibine ait satırlar: eski kişisel kopyalar ortak belgeyi gölgelemesin.
+      rows.push(...(r.data || []).filter(row => row && row.owner === ownerOf(row.col)));
+      if (!r.data || r.data.length < PAGE) break;   // sayfa dolu değilse son sayfa (süzmeden önceki uzunluk)
     }
     if (!client || p !== pullP) return false;
     reconcile(rows, start);
@@ -473,7 +478,7 @@ function pull(again = false) {
 function onChange(p) {
   const type = p.eventType, row = type === 'DELETE' ? p.old : p.new;
   if (!row || typeof row.col !== 'string' || typeof row.id !== 'string') return;
-  if (row.owner && row.owner !== uid) return;
+  if (row.owner && row.owner !== ownerOf(row.col)) return;
   const key = row.col + '/' + row.id;
   if (outbox.some(o => o.key === key)) return;   // yerel bekleyen yazma kazanır
   if (type === 'DELETE') { touched.set(key, ++ctr); removeLocal(key); return; }
@@ -492,8 +497,9 @@ function dropChannel() {
 function subscribe() {
   if (channel || !client || !navigator.onLine) return;
   try {
+    const filter = space ? `owner=in.(${uid},${space})` : 'owner=eq.' + uid;
     channel = client.channel('rota-docs-' + uid)
-      .on('postgres_changes', {event: '*', schema: 'public', table: 'docs', filter: 'owner=eq.' + uid}, onChange)
+      .on('postgres_changes', {event: '*', schema: 'public', table: 'docs', filter}, onChange)
       .subscribe(status => {
         if (status === 'SUBSCRIBED') {
           const again = rtEver; rtEver = true; rtUp = true; emitStatus();
@@ -523,9 +529,10 @@ function emitStatus() {
 async function start(opts) {
   const id = opts && opts.userId;
   if (!opts || !opts.client || !id) throw new TypeError('start({client, userId}) gerekli.');
-  if (uid === id && client) return loadedP;
+  const sp = opts.space || null;
+  if (uid === id && client && space === sp) return loadedP;
   if (uid) await stop();
-  client = opts.client; uid = id;
+  client = opts.client; uid = id; space = sp; shared = new Set(sp && Array.isArray(opts.shared) ? opts.shared : []);
   loadedP = (async () => {
     const a = await openAdapter(id);
     if (uid !== id) { a.close(); return; }
@@ -533,10 +540,21 @@ async function start(opts) {
     let saved = {docs: [], outbox: [], meta: {}};
     try { saved = await a.load(); } catch (e) { console.warn('Rota: yerel kayıt okunamadı.', e); }
     if (uid !== id) return;
-    for (const r of saved.docs) if (r && typeof r.col === 'string' && typeof r.id === 'string' && isObj(r.data)) store.set(r.col + '/' + r.id, entry(r.col, r.id, deepFreeze(r.data), r.ts));
-    outbox = Array.isArray(saved.outbox) ? saved.outbox.filter(o => o && o.key && (o.op === 'put' || o.op === 'del')) : [];
-    seqN = outbox.reduce((m, o) => Math.max(m, o.seq || 0), 0);
     meta = isObj(saved.meta) ? saved.meta : {};
+    let ob = Array.isArray(saved.outbox) ? saved.outbox.filter(o => o && o.key && (o.op === 'put' || o.op === 'del')) : [];
+    let docs = saved.docs;
+    // Önbellek başka bir alan düzeniyle yazılmışsa belgeler atılır (sunucudan yeniden gelir);
+    // bekleyen yazmalardan yalnız kişisel koleksiyonlarınki tutulur.
+    if ((meta.space ?? null) !== sp) {
+      docs = []; ob = ob.filter(o => !shared.has(o.col));
+      meta = {space: sp}; dirtyMeta = true; dirtyOb = true;
+      // IndexedDB'deki eski belgeler de silinsin.
+      saved.docs.forEach(r => { if (r && r.k) dirty.add(r.k); });
+      queueSave();
+    }
+    for (const r of docs) if (r && typeof r.col === 'string' && typeof r.id === 'string' && isObj(r.data)) store.set(r.col + '/' + r.id, entry(r.col, r.id, deepFreeze(r.data), r.ts));
+    outbox = ob;
+    seqN = outbox.reduce((m, o) => Math.max(m, o.seq || 0), 0);
     new Set([...store.values()].map(e => e.col)).forEach(changed);
     if (meta.lastSyncAt) markReady();               // önbellek var: hemen çiz
     emitStatus();
@@ -553,7 +571,7 @@ async function stop() {
   clearTimeout(flushTimer); flushTimer = 0; clearTimeout(pullRetryT); pullBackoff = 0;
   const a = adapter; adapter = null;
   if (a) { await saveNow(a); a.close(); }
-  client = null; uid = null; store = new Map(); outbox = []; touched.clear(); ackTs.clear(); tomb.clear(); inflight.clear();
+  client = null; uid = null; space = null; shared = new Set(); store = new Map(); outbox = []; touched.clear(); ackTs.clear(); tomb.clear(); inflight.clear();
   meta = {}; lastError = null; netDown = false; backoff = 0; flushP = null; pullP = null;
   listeners.clear(); resetReady();
   emitStatus();
@@ -592,6 +610,7 @@ addEventListener('pagehide', () => { saveNow(); });
 window.RotaDB = Object.freeze({collection, doc});
 window.RotaSync = Object.freeze({
   start, stop, clear, status,
+  space: () => space,
   flush: syncNow,
   // Oturum yenilenince ya da ağ dönünce çağrılır.
   kick() { if (!client) return; backoff = 0; flushOutbox(); if (lastError === 'auth' || !meta.lastSyncAt || !ready) pull(); },

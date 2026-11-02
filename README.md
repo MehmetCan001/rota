@@ -21,6 +21,13 @@ Koddaki Supabase anahtarı herkese açık olmak üzere tasarlanmış "publishabl
 Uygulama yerel önceliklidir: veriler cihazda (IndexedDB) da tutulur, değişiklikler önce cihaza yazılır ve
 bağlantı olunca sırayla buluta gönderilir. Hesaplar davetle açılır; uygulamada kayıt olma yoktur.
 
+## Ortak alan
+
+Bir hesap bir ortak alana (`spaces`, üyelik `space_members`) üye olabilir. Üyeyse plan, aşamalar, ortak işler,
+göstergeler, fikirler ve haftalık değerlendirmeler alanın sahipliğinde durur ve ortaklar aynı kayıtları görür;
+günlük program, günler, "Sadece ben" işleri ve kişisel ayarlar kullanıcıya özel kalır. Erişim yine RLS ile
+belirlenir: kullanıcı kendi kayıtlarını ve üyesi olduğu alanın kayıtlarını görür. Üyelik yalnız SQL ile verilir.
+
 ## Dosyalar
 
 - `index.html`, `styles.css`: kabuk ve görünüm

@@ -423,3 +423,17 @@ div.row-main{cursor:default}
   .set-row.out.armed:hover{background:var(--stamp)}
 }
 @media (prefers-reduced-motion: reduce){ *, *::before, *::after{animation:none !important; transition:none !important} }
+
+/* Ortak alan: kime düştüğü, özel işler, ortağın bitirdikleri, liste filtresi, aşama ve plan düzenleme */
+.who.priv{background:none; color:var(--muted); box-shadow:inset 0 0 0 1px var(--line)}
+.by{font-size:12px; font-weight:600; color:var(--ok)}
+.seg.two{grid-template-columns:repeat(2, minmax(0,1fr))}
+#f-task.is-private .shared-only{display:none}
+.segc.three{grid-template-columns:repeat(3, minmax(0,1fr))}
+.segc.three button{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.ph-no.txt{font-size:12px; letter-spacing:.02em}
+.phase-tools{display:flex; justify-content:flex-end; padding:6px 0 4px}
+.plan-tools{display:grid; gap:10px}
+.rv-person{padding:2px 0 6px}
+.rv-person + .rv-person{border-top:1px solid var(--line); padding-top:12px}
+.rv-who{margin:0 0 6px; font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent)}
