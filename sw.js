@@ -40,6 +40,27 @@ self.addEventListener('message', e => {
   if (d === 'SKIP_WAITING' || (d && d.type === 'SKIP_WAITING')) self.skipWaiting();
 });
 
+// Hatırlatma: sunucudan gelen şifreli bildirim. Gövde {title, body, tag, url}.
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) { d = {body: e.data ? e.data.text() : ''}; }
+  e.waitUntil(self.registration.showNotification(d.title || 'Rota', {
+    body: d.body || '', tag: d.tag || 'rota', renotify: true, lang: 'tr',
+    icon: abs('icons/icon-192.png'), timestamp: d.ts || Date.now(), data: {url: d.url || './?tab=bugun'},
+    vibrate: [80, 60, 80],
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = new URL((e.notification.data && e.notification.data.url) || './?tab=bugun', self.location).href;
+  e.waitUntil((async () => {
+    const wins = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
+    const app = wins.find(c => c.url.startsWith(new URL('./', self.location).href));
+    if (app) { await app.focus(); app.postMessage({type: 'GOTAB', tab: 'bugun'}); return; }
+    await self.clients.openWindow(url);
+  })());
+});
+
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;

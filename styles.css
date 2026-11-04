@@ -437,3 +437,146 @@ div.row-main{cursor:default}
 .rv-person{padding:2px 0 6px}
 .rv-person + .rv-person{border-top:1px solid var(--line); padding-top:12px}
 .rv-who{margin:0 0 6px; font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent)}
+
+/* 1.2: açıklamalar, iç içe işler, seviye ve ödüller, alışkanlık tablosu, gün listesi, hatırlatmalar */
+.row-desc{font-size:13.5px; line-height:1.4; color:var(--muted); overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden}
+.is-done .row-desc{display:none}
+.sub-h{margin:12px 0 2px; font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted)}
+.fld-note{margin:-8px 0 14px; font-size:12.5px}
+.count.ok{color:var(--ok)}
+
+/* Zaman çizelgesi: blok gövdesi ve altındaki işler */
+.tl-main{min-width:0; display:flex; flex-direction:column; gap:4px}
+.tl-main > .tl-body{width:100%}
+.kids{display:flex; flex-direction:column; margin:4px 0 2px; padding:2px 0 2px 12px; border-left:2px solid var(--accent-soft)}
+.kid{display:flex; align-items:flex-start; gap:10px; padding:7px 0}
+.kid + .kid{border-top:1px dashed var(--line)}
+.kid .chk{width:22px; height:22px; border-radius:7px; margin-top:1px}
+.kid .chk[aria-pressed="true"]::after{width:9px; height:5px}
+.kid-body{flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; text-align:left; background:none; border:0; padding:0; cursor:pointer}
+.kid-time{font-size:12px; font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums; letter-spacing:.01em}
+.kid .row-title{font-size:15px}
+.kid.is-done .row-title{color:var(--muted); text-decoration:line-through; text-decoration-color:var(--faint)}
+.flame{display:inline-flex; align-items:center; gap:2px; font-weight:700; color:var(--warn); font-variant-numeric:tabular-nums}
+.flame svg{width:14px; height:14px; fill:currentColor; stroke:none}
+.flame.off{color:var(--faint)}
+
+/* Şimdi kartı: dokunulabilir gövde, açıklama, sonraki madde */
+.now-body{display:block; width:100%; text-align:left; background:none; border:0; padding:0; color:inherit; cursor:pointer}
+.now-desc{margin:8px 0 0; font-size:14.5px; line-height:1.45; opacity:.9; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; overflow-wrap:anywhere}
+.now-next{margin:12px 0 0; padding-top:10px; border-top:1px solid rgb(255 255 255 / .2); font-size:13.5px; font-weight:600; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+
+/* Seviye şeridi */
+.lvl{display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:center; width:100%; padding:12px 14px; border:1px solid var(--card-border); border-radius:18px;
+  background:var(--surface); box-shadow:var(--card-shadow); text-align:left; cursor:pointer}
+.lvl:active{transform:scale(.99)}
+.lvl-no{display:grid; place-items:center; width:40px; height:40px; border-radius:13px; font-family:var(--f-display); font-weight:700; font-size:19px; color:var(--on-hero);
+  background:radial-gradient(circle at 100% 0, rgb(255 255 255 / .2) 0 12px, transparent 13px), linear-gradient(140deg, var(--hero-a), var(--hero-b)); box-shadow:0 6px 14px -6px var(--glow)}
+.lvl-no.big{width:56px; height:56px; border-radius:18px; font-size:26px; flex:none}
+.lvl-t{min-width:0; display:flex; flex-direction:column; gap:5px; flex:1}
+.lvl-t strong{font-size:15px; font-weight:700}
+.lvl-t small{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums}
+.lvl-bar{display:block; height:6px; border-radius:999px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--line); overflow:hidden}
+.lvl-bar i{display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg, var(--hero-a), var(--accent)); transition:width .4s cubic-bezier(.2,.8,.2,1)}
+.lvl-w{display:flex; flex-direction:column; align-items:flex-end; padding-left:4px}
+.lvl-w b{font-family:var(--f-display); font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--warn)}
+.lvl-w small{font-size:11px; font-weight:600; color:var(--muted); letter-spacing:.03em}
+.lvl-card{display:flex; align-items:center; gap:14px; padding:4px 0 12px}
+.lvl-card .lvl-t strong{font-size:17px}
+.wallet{display:grid; grid-template-columns:1fr auto; gap:2px 12px; align-items:baseline; padding:12px 14px; border-radius:16px; background:var(--warn-soft); box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent)}
+.wallet span{font-size:13px; font-weight:700; color:var(--warn)}
+.wallet b{font-family:var(--f-display); font-size:20px; color:var(--warn); font-variant-numeric:tabular-nums}
+.wallet small{grid-column:1 / -1; font-size:12px; color:var(--muted)}
+.sh{margin:20px 0 4px; font-family:var(--f-display); font-size:16px; font-weight:700}
+.sheet .row .x-btn{width:40px; height:40px; align-self:center; margin-right:-8px}
+.sheet .row .x-btn.armed{width:auto; padding:0 10px; color:var(--stamp); font-size:13px; font-weight:700}
+.mini:disabled{opacity:.4; cursor:default}
+.inline-form{display:grid; grid-template-columns:minmax(0,1fr) 84px auto; gap:8px; align-items:center; padding:10px 0 4px; border-top:1px solid var(--line)}
+.inline-form input{font:inherit; font-size:16px; color:var(--ink); background:var(--raised); border:0; box-shadow:inset 0 0 0 1px var(--line); border-radius:11px; padding:10px 12px; min-height:44px; min-width:0; width:100%}
+.inline-form input:focus{outline:none; box-shadow:inset 0 0 0 2px var(--accent)}
+.badges{display:grid; grid-template-columns:repeat(auto-fill, minmax(96px, 1fr)); gap:8px; margin-top:6px}
+.badge{display:flex; flex-direction:column; gap:2px; padding:10px; border-radius:14px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--line); opacity:.5}
+.badge b{font-size:13px; font-weight:700}
+.badge small{font-size:11.5px; color:var(--muted); line-height:1.3}
+.badge.ok{opacity:1; background:var(--accent-soft); box-shadow:inset 0 0 0 1.5px var(--accent)}
+.badge.ok b{color:var(--accent)}
+.rules{margin:6px 0 8px; padding-left:18px; display:grid; gap:6px; font-size:14px}
+.rules b{font-variant-numeric:tabular-nums}
+
+/* Puan animasyonu ve seviye atlama */
+.xp-float{position:fixed; z-index:60; transform:translate(-50%, -6px); pointer-events:none; font-family:var(--f-display); font-weight:700; font-size:16px; color:var(--warn);
+  text-shadow:0 1px 0 var(--surface); animation:xpf 1s cubic-bezier(.2,.8,.2,1) forwards}
+@keyframes xpf{0%{opacity:0; transform:translate(-50%, 0) scale(.8)} 20%{opacity:1; transform:translate(-50%, -14px) scale(1.1)} 100%{opacity:0; transform:translate(-50%, -46px) scale(1)}}
+.lvlup{position:fixed; inset:0; z-index:70; display:grid; place-items:center; pointer-events:none; background:radial-gradient(circle, rgb(33 82 208 / .22), transparent 60%); animation:fade .3s}
+.lvlup-in{display:flex; flex-direction:column; align-items:center; gap:2px; padding:22px 34px; border-radius:26px; color:var(--on-hero);
+  background:radial-gradient(circle at 100% 0, rgb(255 255 255 / .2) 0 40px, transparent 41px), linear-gradient(140deg, var(--hero-a), var(--hero-b)); box-shadow:var(--shadow-strong);
+  animation:lvl 2.3s cubic-bezier(.3,1.5,.5,1) forwards}
+.lvlup-in small{font-size:12px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; opacity:.85}
+.lvlup-in b{font-family:var(--f-display); font-size:56px; line-height:1}
+.lvlup-in span{font-size:16px; font-weight:700}
+@keyframes lvl{0%{transform:scale(.5); opacity:0} 15%{transform:scale(1.06); opacity:1} 25%{transform:scale(1)} 80%{opacity:1} 100%{opacity:0; transform:scale(.96)}}
+
+/* Hafta: hedef, alışkanlık tablosu, gün listesi */
+.hab{padding:10px 0}
+.hab + .hab{border-top:1px solid var(--line)}
+.hab-top{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px}
+.hab-t{min-width:0; display:flex; flex-direction:column}
+.hab-t b{font-size:15px; font-weight:600; overflow-wrap:anywhere}
+.hab-t small{font-size:12px; color:var(--muted)}
+.hab .flame{font-size:15px}
+.hab .flame svg{width:16px; height:16px}
+.hab-cells{display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:5px}
+.hc{display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:44px; border:0; border-radius:11px; padding:4px 0; cursor:pointer;
+  font-family:var(--f-display); font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--muted); background:var(--raised); box-shadow:inset 0 0 0 1px var(--line)}
+.hc small{font-family:var(--f-body); font-size:9.5px; font-weight:600; letter-spacing:.03em; text-transform:uppercase; opacity:.8}
+.hc.on{background:var(--accent); color:var(--on-accent); box-shadow:none}
+.hc.now{color:var(--accent); box-shadow:inset 0 0 0 2px var(--accent)}
+.hc.miss{color:var(--faint); background:transparent}
+.hc.exc{color:var(--faint); background:transparent; box-shadow:none; border:1.5px dashed var(--line)}
+.hc.fut{opacity:.45; cursor:default}
+.hc:not(:disabled):active{transform:scale(.94)}
+.days{padding-bottom:6px}
+.day + .day{border-top:1px solid var(--line)}
+.day-head{width:100%; display:grid; grid-template-columns:44px minmax(0,1fr) auto; gap:12px; align-items:center; padding:11px 0; background:none; border:0; text-align:left; cursor:pointer}
+.day-n{display:flex; flex-direction:column; align-items:center; justify-content:center; width:44px; height:44px; border-radius:13px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--line)}
+.day-n b{font-family:var(--f-display); font-size:18px; line-height:1; font-variant-numeric:tabular-nums}
+.day-n small{font-size:10px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em}
+.day.is-today .day-n{background:var(--ink); box-shadow:none}
+.day.is-today .day-n b{color:var(--surface)}
+.day.is-today .day-n small{color:var(--faint)}
+.day-t{min-width:0; display:flex; flex-direction:column; gap:1px}
+.day-t strong{font-size:15px; font-weight:600}
+.day-t small{font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.day.is-open .day-t small{white-space:normal}
+.day-r{display:flex; align-items:center; gap:6px}
+.day-r svg{width:18px; height:18px; color:var(--faint); transition:transform .2s}
+.day-head[aria-expanded="true"] .day-r svg{transform:rotate(180deg)}
+.day-body{padding:0 0 6px}
+
+/* Ayrıntı sayfası */
+.dt-when{margin:0; font-size:13px; font-weight:700; letter-spacing:.04em; color:var(--accent); font-variant-numeric:tabular-nums}
+.dt-title{margin:4px 0 12px; font-family:var(--f-display); font-size:24px; font-weight:700; line-height:1.15; letter-spacing:-.015em; overflow-wrap:anywhere}
+.desc{font-size:15.5px; line-height:1.55; overflow-wrap:anywhere}
+.desc p{margin:0 0 8px}
+.desc ul{margin:0 0 10px; padding-left:20px; display:grid; gap:4px}
+.desc .muted{color:var(--muted)}
+.dt-meta{margin:14px 0 6px; padding:10px 14px; border-radius:14px; background:var(--raised); box-shadow:inset 0 0 0 1px var(--line); display:grid; gap:8px}
+.dt-meta > div{display:grid; grid-template-columns:96px minmax(0,1fr); gap:10px; font-size:14px}
+.dt-meta dt{color:var(--muted); font-weight:600}
+.dt-meta dd{margin:0; overflow-wrap:anywhere}
+.btn-sec{background:var(--raised); color:var(--ink); border:0; box-shadow:inset 0 0 0 1px var(--line); border-radius:14px; padding:13px 16px; min-height:48px; font-weight:600; cursor:pointer}
+.sheet .actions{flex-wrap:wrap}
+.sheet .actions .btn-sec:first-child{margin-right:auto}
+
+/* Hatırlatmalar: ayarlar kartı ve Bugün'deki öneri */
+.set-card.col{flex-direction:column; align-items:stretch; gap:10px}
+.set-line{display:flex; align-items:center; gap:12px}
+.bell{flex:none; display:grid; place-items:center; width:36px; height:36px; border-radius:11px; color:var(--muted); background:var(--surface); box-shadow:inset 0 0 0 1px var(--line)}
+.bell svg{width:19px; height:19px}
+.bell.on{color:var(--on-accent); background:var(--accent); box-shadow:none}
+.set-card.col .link{align-self:flex-start; padding:4px 2px}
+.cta{display:flex; align-items:center; gap:12px; padding:10px 6px 10px 12px; border-radius:18px; background:var(--accent-soft); box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent)}
+.cta .bell{color:var(--accent)}
+.cta-t{flex:1; min-width:0; display:flex; flex-direction:column}
+.cta-t b{font-size:15px}
+.cta-t small{font-size:13px; color:var(--muted)}

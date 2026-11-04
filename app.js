@@ -14,6 +14,8 @@ const DEF_START = '2026-11-01', DEF_MONTHS = 24;
 const SHARED = ['tasks', 'phases', 'ideas', 'weeks', 'metrics', 'settings'];
 const CURRENCIES = ['$', '€', '₺'];
 const VERSION = String(self.APP_VERSION || '');
+// Hatırlatma sunucusu (Supabase Edge Function): VAPID anahtarı, deneme bildirimi.
+const FN_URL = 'https://ywwigizfvrcsljgjcqfe.supabase.co/functions/v1/rota-remind';
 const nf = new Intl.NumberFormat('tr-TR', {maximumFractionDigits: 0});
 const nf1 = new Intl.NumberFormat('tr-TR', {maximumFractionDigits: 1});
 const SVG = (d, w = 2) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -21,12 +23,14 @@ const CHEV = SVG('<path d="m6 9 6 6 6-6"/>');
 const CHEV_R = SVG('<path d="m9 6 6 6-6 6"/>');
 const X_ICON = SVG('<path d="M6 6l12 12M18 6 6 18"/>');
 const EYE = SVG('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>', 1.8);
+const FLAME = SVG('<path d="M12 21c-3.9 0-6.5-2.6-6.5-6.2 0-2.9 1.8-4.9 3.4-6.6.3 1.6 1.1 2.8 2.3 3.4-.2-3.3 1.3-6.2 3.7-8.1.2 2.6 1.4 4.4 2.7 6 1 1.3 1.9 2.8 1.9 5.1 0 3.8-3.1 6.4-7.5 6.4z"/>', 1.9);
+const BELL = SVG('<path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15L6 16zM10 20.5a2 2 0 0 0 4 0"/>', 1.9);
 const EYE_OFF = SVG('<path d="M3 3l18 18M10.6 5.6A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-3.1 3.9M6.3 7.3C3.9 9 2.5 12 2.5 12S6 18.5 12 18.5c1.6 0 3-.4 4.2-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/>', 1.8);
 
 const S = {tasks: [], shTasks: [], myTasks: [], routine: [], phases: [], ideas: [], days: {}, weeks: {}, metrics: null, settings: null, prefs: null, got: {},
-  tab: 'bugun', weekOff: 0, selDay: null, tplEdit: false, open: {}, preset: {}, lastKey: '', pop: null, enter: false,
+  tab: 'bugun', weekOff: 0, tplEdit: false, open: {}, preset: {}, lastKey: '', pop: null, enter: false,
   toastFn: null, user: null, running: false, sync: null, action: null, sheet: '', akeys: null, cfgC: null,
-  space: null, me: null, spaceName: '', listFilter: 'all'};
+  space: null, me: null, spaceName: '', listFilter: 'all', client: null, gx: null, openDays: {}, push: {sub: null, checked: false}};
 try { const t = localStorage.getItem('rota-tab'); if (TABS.includes(t)) S.tab = t; } catch (e) { /* depolama kapalı */ }
 let db = null;
 
@@ -47,6 +51,9 @@ const shortDate = key => { const d = parse(key); return `${d.getDate()} ${MON_S[
 const LOC1 = ['', 'de', 'de', 'te', 'te', 'te', 'da', 'de', 'de', 'da'], LOC10 = ['', 'da', 'de', 'da', 'ta', 'de', 'ta', 'te', 'de', 'da'];
 const locSuf = n => { n = Math.abs(Math.round(n)); return n % 10 ? LOC1[n % 10] : n % 100 ? LOC10[Math.floor(n / 10) % 10] : 'de'; };
 const atTime = t => { const [h, m] = String(t).split(':').map(Number); return `${t}’${locSuf(m || h || 0)}`; };
+const fromMin = n => { n = ((Math.round(n) % 1440) + 1440) % 1440; return `${pad(Math.floor(n / 60))}:${pad(n % 60)}`; };
+const addMin = (t, m) => fromMin(toMin(t) + m);
+const taskMin = t => Math.max(5, Number(t.min) || 30);
 function dueLabel(key) {
   const diff = Math.round((parse(key) - today()) / 864e5);
   if (diff === 0) return ['Bugün', ''];
@@ -128,16 +135,68 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const byOrder = (a, b) => (a.order ?? 1e15) - (b.order ?? 1e15) || String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
 const fmtDur = m => { m = Math.max(0, Math.round(m)); const h = Math.floor(m / 60), r = m % 60; return h ? `${h} sa${r ? ` ${r} dk` : ''}` : `${r} dk`; };
+const lines = s => String(s || '').split('\n').map(x => x.trim()).filter(Boolean);
+// Satır altı kısa açıklama: "Ne:" etiketi ve boş etiketler ("Nasıl:" + madde listesi) atılır.
+const brief = s => lines(s).map(l => l.replace(/^[-•]\s+/, '').replace(/^Ne:\s*/, '')).filter(l => !/^[^:]{2,24}:$/.test(l)).join(' · ');
+// Açıklama metni: her satır paragraf, "- " ile başlayan satırlar madde, "Nasıl:" gibi kısa etiketler kalın.
+function richText(s) {
+  let h = '', ul = false;
+  for (const l of lines(s)) {
+    if (/^[-•]\s+/.test(l)) { if (!ul) { h += '<ul>'; ul = true; } h += `<li>${esc(l.replace(/^[-•]\s+/, ''))}</li>`; continue; }
+    if (ul) { h += '</ul>'; ul = false; }
+    const m = l.match(/^([^:]{2,24}):\s*(.*)$/);
+    h += m && !/https?$/i.test(m[1]) ? `<p><b>${esc(m[1])}:</b>${m[2] ? ' ' + esc(m[2]) : ''}</p>` : `<p>${esc(l)}</p>`;
+  }
+  return ul ? h + '</ul>' : h;
+}
 function blockMin(b) { return b.start && b.end ? Math.max(0, toMin(b.end) - toMin(b.start)) : Number(b.min) || 0; }
 const sortKey = b => b.start || (b.dow === 0 ? '00:00' : '23:59');
 const sortBlocks = list => list.sort((a, b) => String(sortKey(a)).localeCompare(String(sortKey(b))) || byOrder(a, b));
 const blocksFor = d => { const w = dow(d); return sortBlocks(S.routine.filter(b => b.dow === 0 || b.dow === w)); };
-const coreBlock = () => sortBlocks(S.routine.filter(b => b.core && b.dow === 0))[0] || sortBlocks(S.routine.filter(b => b.core))[0] || null;
 const dayDoc = key => S.days[key] || {};
 const isDone = (key, id) => !!((dayDoc(key).done || {})[id]);
-function dayCount(key, d) {
-  const bad = dayDoc(key).bad, bl = blocksFor(d).filter(b => !bad || b.core);
-  return {total: bl.length, done: bl.filter(b => isDone(key, b.id)).length};
+/* Bir günün maddeleri: program blokları ve bana düşen o tarihli işler. Saati bir bloğun içine düşen iş o bloğun
+   altında görünür (ör. 20:15–22:00 Ajans bloğunun içindeki 20:15 ve 21:05 işleri). Her gün blokları (alışkanlıklar) iş barındırmaz. */
+function dayPlan(key, o = {}) {
+  const dd = dayDoc(key);
+  const blocks = blocksFor(parse(key)).filter(b => !o.noHabits || b.dow !== 0).map(b => {
+    const mm = blockMin(b);
+    return {k: 'b', id: b.id, b, title: b.title, note: b.note || '', area: b.area, start: b.start || '', end: b.end || (b.start && mm ? addMin(b.start, mm) : ''),
+      mins: mm, done: isDone(key, b.id), dim: !!dd.joker || (!!dd.bad && !b.core), habit: b.dow === 0, core: !!b.core, kids: []};
+  });
+  const tasks = S.tasks.filter(t => forMe(t) && t.due === key).sort(byOrder).map(t => ({k: 't', id: t.id, t, title: t.title, note: t.note || '', area: t.area,
+    start: t.time || '', end: t.time ? addMin(t.time, taskMin(t)) : '', mins: t.time || t.min ? taskMin(t) : 0, done: !!t.done, dim: false, kids: []}));
+  const loose = [];
+  tasks.forEach(it => {
+    const host = it.start && blocks.find(b => !b.habit && b.start && b.end && toMin(b.start) <= toMin(it.start) && toMin(it.start) < toMin(b.end));
+    (host ? host.kids : loose).push(it);
+  });
+  const st = (a, b) => toMin(a.start) - toMin(b.start) || (a.k === b.k ? 0 : a.k === 'b' ? -1 : 1);
+  blocks.forEach(b => b.kids.sort(st));
+  const all = [...blocks, ...loose];
+  return {timed: all.filter(x => x.start).sort(st), untimed: all.filter(x => !x.start), blocks, tasks, dd};
+}
+function dayCount(key) {
+  const p = dayPlan(key), items = [...p.blocks.filter(b => !b.dim), ...p.tasks];
+  return {total: items.length, done: items.filter(x => x.done).length};
+}
+/* Göreve boş saat: o günün (tercihen aynı alandaki) bloğunda ilk boşluk. Blok yoksa ya da doluysa akşam penceresinde
+   (20:15–22:00) hiçbir blok ve işle çakışmayan ilk boşluk. Yer yoksa boş döner: iş "Saati yok" altında görünür. Bugünse geçmiş saat verilmez. */
+function suggestSlot(key, mins, area, skipId) {
+  const p = dayPlan(key), floor = key === todayKey() ? Math.ceil((nowMin() + 1) / 5) * 5 : 0;
+  const span = x => [toMin(x.start), Math.max(toMin(x.end || x.start), toMin(x.start) + 1)];
+  const tasks = p.tasks.filter(x => x.id !== skipId && x.start).map(span);
+  const fit = (from, to, busy) => {
+    let t = Math.max(from, floor);
+    for (const [s, e] of [...busy].sort((a, b) => a[0] - b[0])) if (s < t + mins && e > t) t = e;
+    return t + mins <= to ? t : -1;
+  };
+  const hosts = p.blocks.filter(b => !b.habit && !b.dim && b.start && b.end && !b.b.review)
+    .sort((a, b) => (b.area === area) - (a.area === area) || toMin(a.start) - toMin(b.start));
+  for (const b of hosts) { const t = fit(toMin(b.start), toMin(b.end), tasks); if (t >= 0) return fromMin(t); }
+  const all = [...tasks, ...p.blocks.filter(b => !b.dim && b.start).map(span)];
+  const t = fit(toMin(cfg().taskSlot || '20:15'), toMin(cfg().taskSlotEnd || '22:00'), all);
+  return t >= 0 ? fromMin(t) : '';
 }
 const phases = () => [...S.phases].sort(byOrder);
 // Ortak alanda her ortağın haftalık değerlendirmesi ayrı belgedir: aynı anda yazınca birbirini ezmez.
@@ -156,6 +215,96 @@ function weekEnergy(mon) {
 function energyRule() {
   const m = monday(today()), w1 = weekEnergy(addDays(m, -7)), w2 = weekEnergy(addDays(m, -14));
   return !!(w1 && w2 && w1.n >= 2 && w2.n >= 2 && w1.avg <= 2 && w2.avg <= 2);
+}
+/* ---------- puan, seviye, zincir, ödül ----------
+   Puan kayıtlardan hesaplanır (geri alınca düşer). "Tam gün" o gün kapanınca gün belgesine işlenir: sonradan programa
+   blok eklemek geçmiş günlerin puanını değiştirmesin. Ödüller ve harcamalar kişisel ayarlarda (prefs) durur. */
+const XP = {block: 10, task: 20, gate: 50, full: 25, review: 30};
+const MILES = [[3, 15], [7, 30], [14, 60], [30, 150], [60, 300], [100, 500]];
+const lvlAt = n => 50 * n * (n - 1);   // seviye n'in başladığı toplam puan: 1→0, 2→100, 3→300, 4→600, 5→1000
+const levelOf = xp => { let n = 1; while (lvlAt(n + 1) <= xp) n++; return n; };
+const RANKS = [[20, 'Üstat'], [15, 'Usta'], [10, 'Kalfa'], [5, 'Çırak'], [1, 'Acemi']];
+const rankOf = n => (RANKS.find(([m]) => n >= m) || RANKS[RANKS.length - 1])[1];
+const habits = () => sortBlocks(S.routine.filter(b => b.dow === 0 && !b.review));
+const DEF_REWARDS = [
+  {id: 'w-kahve', title: 'Sevdiğin bir kahve ya da tatlı', cost: 200},
+  {id: 'w-dizi', title: 'Suçluluk duymadan bir bölüm dizi ya da film', cost: 300},
+  {id: 'w-joker', title: 'Joker: bu akşam izin, zincirler kırılmaz', cost: 600, joker: true},
+  {id: 'w-kitap', title: 'Yeni bir kitap', cost: 1200},
+  {id: 'w-hediye', title: 'Kendine bir hediye (en çok 500 TL)', cost: 3000},
+];
+const rewards = () => Array.isArray((S.prefs || {}).rewards) ? S.prefs.rewards : DEF_REWARDS;
+const spentList = () => Array.isArray((S.prefs || {}).spent) ? S.prefs.spent : [];
+const mineDone = t => !!t.done && (t.doneBy ? t.doneBy === S.me : forMe(t));
+// Zincir: üst üste yapılan günler. Kötü gün ("her koşulda" değilse), joker gün ve henüz bitmemiş bugün zinciri kırmaz.
+function streakOf(h) {
+  const tk = todayKey(), r = {cur: 0, best: 0, bonus: 0, total: 0};
+  const ks = Object.keys(S.days).filter(k => k <= tk && (S.days[k].done || {})[h.id]).sort();
+  if (!ks.length) return r;
+  let run = 0;
+  for (let d = parse(ks[0]), end = parse(tk); d <= end; d = addDays(d, 1)) {
+    const k = iso(d), dd = S.days[k] || {};
+    if ((dd.done || {})[h.id]) { run++; r.total++; if (run > r.best) r.best = run; const m = MILES.find(([n]) => n === run); if (m) r.bonus += m[1]; }
+    else if (dd.joker || (dd.bad && !h.core) || k === tk) continue;
+    else run = 0;
+  }
+  r.cur = run;
+  return r;
+}
+function game() {
+  if (S.gx) return S.gx;
+  const tk = todayKey();
+  let blocks = 0, full = 0, tasks = 0, gates = 0, reviews = 0, bonus = 0;
+  for (const [k, dd] of Object.entries(S.days)) {
+    if (k > tk) continue;
+    blocks += Object.values(dd.done || {}).filter(Boolean).length;
+    if (dd.full) full++;
+  }
+  S.tasks.forEach(t => { if (mineDone(t)) { if (t.kind === 'gate') gates++; else tasks++; } });
+  Object.entries(S.weeks).forEach(([id, w]) => { if ((shared() ? id.endsWith('_' + S.me) : !id.includes('_')) && w && (w.good || w.stuck || w.next)) reviews++; });
+  const streaks = new Map();
+  habits().forEach(h => { const s = streakOf(h); streaks.set(h.id, s); bonus += s.bonus; });
+  const xp = blocks * XP.block + full * XP.full + tasks * XP.task + gates * XP.gate + reviews * XP.review + bonus;
+  const spent = spentList().reduce((s, x) => s + (Number(x.cost) || 0), 0), level = levelOf(xp), base = lvlAt(level);
+  return (S.gx = {xp, level, rank: rankOf(level), into: xp - base, need: lvlAt(level + 1) - base, balance: xp - spent, spent, streaks, blocks, full, tasks, gates, reviews});
+}
+function dayXP(keys) {
+  let x = 0;
+  keys.forEach(k => { const dd = S.days[k] || {}; x += Object.values(dd.done || {}).filter(Boolean).length * XP.block + (dd.full ? XP.full : 0); });
+  S.tasks.forEach(t => { if (mineDone(t) && keys.includes(t.doneAt)) x += t.kind === 'gate' ? XP.gate : XP.task; });
+  return x;
+}
+// Günün her maddesi bittiyse "tam gün" işlenir, biri geri alınırsa kalkar.
+function syncFull(key) {
+  if (!key || key > todayKey()) return;
+  const c = dayCount(key), full = c.total > 0 && c.done === c.total;
+  if (full !== !!dayDoc(key).full) { localDay(key, {full}); upsert('days/' + key, {full}, {date: key, done: {}}); }
+}
+function floatXP(el, n) {
+  if (!el || !el.getBoundingClientRect) return;
+  const r = el.getBoundingClientRect(), f = document.createElement('span');
+  f.className = 'xp-float'; f.textContent = `+${n}`; f.setAttribute('aria-hidden', 'true');
+  f.style.left = `${Math.round(r.left + r.width / 2)}px`; f.style.top = `${Math.round(r.top)}px`;
+  document.body.appendChild(f); setTimeout(() => f.remove(), 1100);
+}
+function levelUp(g) {
+  const o = document.createElement('div');
+  o.className = 'lvlup'; o.setAttribute('role', 'status');
+  o.innerHTML = `<div class="lvlup-in"><small>Seviye atladın</small><b>${g.level}</b><span>${esc(g.rank)}</span></div>`;
+  document.body.appendChild(o); setTimeout(() => o.remove(), 2300);
+  try { if (navigator.vibrate) navigator.vibrate([20, 60, 30]); } catch (e) { /* desteklenmiyor */ }
+}
+// Bir işaretlemeden sonra: kazanılan puanı uçur, zincir eşiği ve seviye atlama varsa kutla. Dönen değer: kazanılan puan.
+function reward(before, el, habitId) {
+  S.gx = null;
+  const g = game(), gain = g.xp - before.xp;
+  if (gain > 0) floatXP(el, gain);
+  if (g.level > before.level) levelUp(g);
+  else if (habitId && gain > 0) {
+    const s = g.streaks.get(habitId), m = s && MILES.find(([n]) => n === s.cur), h = S.routine.find(b => b.id === habitId);
+    if (m && h) toast(`${h.title}: ${s.cur} günlük zincir · +${m[1]} bonus`, {ms: 3200});
+  }
+  return gain;
 }
 const dot = a => `<i class="dot d-${areaIdx(a)}"></i>`;
 const ring = (done, total) => {
@@ -204,83 +353,129 @@ function syncUI() {
 }
 
 /* ---------- satırlar ---------- */
+const whoChip = t => {
+  if (t._mine && shared()) return '<span class="who priv">Özel</span>';
+  if (t.who && !isMe(normWho(t.who)) && !(t.done && t.doneBy && normWho(t.who) === t.doneBy)) return `<span class="who">${esc(whoLabel(t.who))}</span>`;
+  return '';
+};
 function taskRow(t, o = {}) {
   const [dl, cls] = t.due ? dueLabel(t.due) : ['', ''];
   const meta = [`${dot(t.area)}${esc(t.area ? areaLabel(t.area) : 'Kişisel')}`];
-  if (dl && !t.done) meta.push(`<span class="${cls}">${esc(dl)}</span>`);
-  if (t._mine && shared()) meta.push('<span class="who priv">Özel</span>');
-  else if (t.who && !isMe(normWho(t.who)) && !(t.done && t.doneBy && normWho(t.who) === t.doneBy)) meta.push(`<span class="who">${esc(whoLabel(t.who))}</span>`);
+  if (dl && !t.done) meta.push(`<span class="${cls}">${esc(dl)}${t.time && cls !== 'late' ? ` ${esc(t.time)}` : ''}</span>`);
+  if (t.min && !t.done) meta.push(fmtDur(t.min));
+  const wc = whoChip(t); if (wc) meta.push(wc);
   if (t.done && shared() && t.doneBy && t.doneBy !== S.me) meta.push(`<span class="by">${esc(memberName(t.doneBy))} bitirdi</span>`);
+  const desc = o.note !== false && t.note && !t.done ? `<span class="row-desc">${esc(brief(t.note))}</span>` : '';
   return `<div class="row${t.done ? ' is-done' : ''}${t.kind === 'gate' ? ' is-gate' : ''}">
     <button class="chk${S.pop === t.id ? ' pop' : ''}" type="button" data-act="toggleTask" data-id="${esc(t.id)}" aria-pressed="${!!t.done}" aria-label="${esc(t.title)}"></button>
-    <button class="row-main" type="button" data-act="editTask" data-id="${esc(t.id)}"><span class="row-title">${esc(t.title)}</span>
-      <span class="row-meta">${meta.join('<span class="sep">·</span>')}</span>${o.note && t.note && !t.done ? `<span class="row-note">${esc(t.note)}</span>` : ''}</button>
+    <button class="row-main" type="button" data-act="detail" data-k="t" data-id="${esc(t.id)}"><span class="row-title">${esc(t.title)}</span>${desc}
+      <span class="row-meta">${meta.join('<span class="sep">·</span>')}</span></button>
     ${o.pull ? `<button class="mini" type="button" data-act="pullToday" data-id="${esc(t.id)}">Bugüne al</button>` : ''}
   </div>`;
 }
-function blockRow(b, key, bad, locked) {
-  const done = isDone(key, b.id), dim = bad && !b.core, mm = blockMin(b);
-  const time = b.start ? `<span class="tl-time">${esc(b.start)}${b.end ? `<small>${esc(b.end)}</small>` : ''}</span>` : '<span class="tl-time any">GÜN İÇİ</span>';
-  const meta = `<span class="row-meta">${dot(b.area)}${esc(areaLabel(b.area))}${mm ? `<span class="sep">·</span>${fmtDur(mm)}` : ''}${b.core ? '<span class="sep">·</span>her koşulda' : ''}</span>`;
-  const body = b.review
-    ? `<button class="tl-body" type="button" data-act="review" data-week="${iso(monday(parse(key)))}"><span class="row-title">${esc(b.title)}</span>${meta}<span class="row-link">Değerlendirmeyi yaz</span></button>`
-    : `<div class="tl-body"><span class="row-title">${esc(b.title)}</span>${meta}</div>`;
-  return `<div class="tl-row${done ? ' is-done' : ''}${dim ? ' is-dim' : ''}">${time}
-    <button class="chk round${S.pop === key + ':' + b.id ? ' pop' : ''}" type="button" data-act="toggleBlock" data-id="${esc(b.id)}" data-date="${key}" aria-pressed="${done}" aria-label="${esc(b.title)}"${locked || dim ? ' disabled' : ''}></button>${body}</div>`;
+/* Zaman çizelgesi satırı: blok (yuvarlak kutu) ya da iş (kare kutu); bloğun içine düşen işler altında girintili. */
+function itemMeta(it) {
+  const m = [`${dot(it.area)}${esc(it.area ? areaLabel(it.area) : 'Kişisel')}`];
+  if (it.mins) m.push(fmtDur(it.mins));
+  if (it.k === 'b' && it.habit) { const s = game().streaks.get(it.id); if (s && s.cur) m.push(`<span class="flame" title="Zincir">${FLAME}${s.cur}</span>`); }
+  if (it.k === 'b' && it.core) m.push('her koşulda');
+  if (it.k === 't') { const wc = whoChip(it.t); if (wc) m.push(wc); }
+  return `<span class="row-meta">${m.join('<span class="sep">·</span>')}</span>`;
+}
+const chkFor = (it, key, locked) => it.k === 'b'
+  ? `<button class="chk round${S.pop === key + ':' + it.id ? ' pop' : ''}" type="button" data-act="toggleBlock" data-id="${esc(it.id)}" data-date="${key}" aria-pressed="${it.done}" aria-label="${esc(it.title)}"${locked || it.dim ? ' disabled' : ''}></button>`
+  : `<button class="chk${S.pop === it.id ? ' pop' : ''}" type="button" data-act="toggleTask" data-id="${esc(it.id)}" aria-pressed="${it.done}" aria-label="${esc(it.title)}"></button>`;
+function itemRow(it, key, locked) {
+  const time = it.start ? `<span class="tl-time">${esc(it.start)}${it.end ? `<small>${esc(it.end)}</small>` : ''}</span>` : '<span class="tl-time any">SAATSİZ</span>';
+  const desc = it.note && !it.done ? `<span class="row-desc">${esc(brief(it.note))}</span>` : '';
+  const body = it.k === 'b' && it.b.review
+    ? `<button class="tl-body" type="button" data-act="review" data-week="${iso(monday(parse(key)))}"><span class="row-title">${esc(it.title)}</span>${desc}${itemMeta(it)}<span class="row-link">Değerlendirmeyi yaz</span></button>`
+    : `<button class="tl-body" type="button" data-act="detail" data-k="${it.k}" data-id="${esc(it.id)}" data-date="${key}"><span class="row-title">${esc(it.title)}</span>${desc}${itemMeta(it)}</button>`;
+  const kids = it.kids.length ? `<div class="kids">${it.kids.map(c => `<div class="kid${c.done ? ' is-done' : ''}">${chkFor(c, key)}
+    <button class="kid-body" type="button" data-act="detail" data-k="t" data-id="${esc(c.id)}" data-date="${key}"><span class="kid-time">${esc(c.start)}–${esc(c.end)} · ${fmtDur(c.mins)}</span>
+      <span class="row-title">${esc(c.title)}</span>${c.note && !c.done ? `<span class="row-desc">${esc(brief(c.note))}</span>` : ''}</button></div>`).join('')}</div>` : '';
+  return `<div class="tl-row${it.done ? ' is-done' : ''}${it.dim ? ' is-dim' : ''}${it.k === 't' ? ' is-task' : ''}">${time}${chkFor(it, key, locked)}<div class="tl-main">${body}${kids}</div></div>`;
 }
 const stamp = (ok, big) => `<span class="stamp${ok ? ' ok' : ''}${big ? ' big' : ''}" role="img" aria-label="${ok ? 'Kapı geçildi' : 'Kapı bekliyor'}">${ok ? 'GEÇTİ' : 'KAPI'}</span>`;
 
 /* ---------- Şimdi kartı ---------- */
-function nowCard(d, key, bl, dd) {
-  const w = dow(d), mins = nowMin(), active = bl.filter(b => !dd.bad || b.core), timed = active.filter(b => b.start);
-  const onlyDaily = bl.every(b => b.dow === 0);
-  const close = bl.filter(b => b.dow === 0 && b.start && !b.end).map(b => b.start).sort().pop();
-  const btn = b => `<button class="now-btn" type="button" data-act="toggleBlock" data-id="${esc(b.id)}" data-date="${key}">Bitti</button>`;
-  const card = (eb, title, meta, b, pct) => `<section class="now" aria-label="Şimdi"><div class="now-top"><p class="now-eb">${esc(eb)}</p>${b ? btn(b) : ''}</div>
-    <h2 class="now-title">${esc(title)}</h2>${meta ? `<p class="now-meta">${esc(meta)}</p>` : ''}${pct != null ? `<div class="now-bar"><i style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%"></i></div>` : ''}</section>`;
-  const cur = timed.find(b => b.end && toMin(b.start) <= mins && mins < toMin(b.end) && !isDone(key, b.id));
-  if (cur) { const s = toMin(cur.start), e = toMin(cur.end); return card('Şu an', cur.title, `${cur.start}–${cur.end} · ${fmtDur(e - mins)} kaldı`, cur, (mins - s) / (e - s) * 100); }
-  const core = active.find(b => b.core && !isDone(key, b.id));
-  if (onlyDaily || dd.bad) {
-    const why = dd.bad ? 'Kötü gün. Telafi yok.' : `${DOW_L[w]} akşamı boş.`;
-    return core ? card('Günün tek şartı', core.title, why, core) : card('Bugün', 'Günün şartı tamam.', `${why}${close ? ` ${atTime(close)} kapat.` : ''}`, null);
+/* Şimdi kartı: şu an yapılacak tek şey, açıklamasıyla. Bloğun açık işi varsa kart bloğu değil işi gösterir. */
+function nowCard(key, plan) {
+  const mins = nowMin(), dd = plan.dd, leaves = [];
+  plan.timed.forEach(it => {
+    if (it.dim) return;
+    it.kids.forEach(c => leaves.push({...c, host: it}));
+    if (!it.kids.some(c => !c.done)) leaves.push(it);
+  });
+  const end = x => x.end ? toMin(x.end) : toMin(x.start) + (x.mins || 15);
+  const open = leaves.filter(x => !x.done);
+  const cur = open.filter(x => toMin(x.start) <= mins && mins < end(x)).sort((a, b) => (a.k === b.k ? toMin(b.start) - toMin(a.start) : a.k === 't' ? -1 : 1))[0];
+  const ups = open.filter(x => toMin(x.start) > mins).sort((a, b) => toMin(a.start) - toMin(b.start));
+  const late = open.filter(x => end(x) <= mins);
+  const card = (eb, it, meta, pct, after) => {
+    const btn = it ? `<button class="now-btn" type="button" data-act="${it.k === 'b' ? 'toggleBlock' : 'toggleTask'}" data-id="${esc(it.id)}" data-date="${key}">Bitti</button>` : '';
+    const title = it ? it.title : meta.title, d = it && it.note ? `<p class="now-desc">${esc(brief(it.note))}</p>` : '';
+    const inner = `<h2 class="now-title">${esc(title)}</h2>${meta.text ? `<p class="now-meta">${esc(meta.text)}</p>` : ''}${d}`;
+    return `<section class="now" aria-label="Şimdi"><div class="now-top"><p class="now-eb">${esc(eb)}</p>${btn}</div>
+      ${it ? `<button class="now-body" type="button" data-act="detail" data-k="${it.k}" data-id="${esc(it.id)}" data-date="${key}">${inner}</button>` : inner}
+      ${pct != null ? `<div class="now-bar"><i style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%"></i></div>` : ''}
+      ${after ? `<p class="now-next">Sonra · ${esc(after.start)} ${esc(after.title)}</p>` : ''}</section>`;
+  };
+  const span = x => `${x.start}${x.end ? `–${x.end}` : ''}`;
+  if (cur) {
+    const s = toMin(cur.start), e = end(cur);
+    return card(`Şu an${cur.host ? ` · ${cur.host.title}` : ''}`, cur, {text: `${span(cur)} · ${fmtDur(e - mins)} kaldı`}, (mins - s) / Math.max(1, e - s) * 100, ups[0]);
   }
-  const next = timed.filter(b => toMin(b.start) > mins && !isDone(key, b.id)).sort((a, b) => toMin(a.start) - toMin(b.start))[0];
-  if (next) return card(`Sıradaki · ${fmtDur(toMin(next.start) - mins)} sonra`, next.title, next.end ? `${next.start}–${next.end} · ${fmtDur(blockMin(next))}` : next.start, next);
-  const left = active.filter(b => !isDone(key, b.id));
-  if (left.length) return card(`Kalan · ${left.length} blok`, left[0].title, 'Saati geçti. Yaptıysan işaretle.', left[0]);
-  return card('Bugün', 'Program tamam.', `${close ? `${atTime(close)} kapat. ` : ''}Yarın devam.`, null);
+  if (ups.length) { const n = ups[0]; return card(`Sıradaki · ${fmtDur(toMin(n.start) - mins)} sonra`, n, {text: `${span(n)}${n.mins ? ` · ${fmtDur(n.mins)}` : ''}`}, null, ups[1]); }
+  if (late.length) return card(`Kaldı · ${late.length} madde`, late[0], {text: `${span(late[0])} · saati geçti. Yaptıysan işaretle.`}, null, late[1]);
+  if (!plan.timed.length && !plan.untimed.length) return card('Bugün', null, {title: 'Program yok.', text: 'Şablona blok ekle ya da + ile iş ekle.'});
+  const why = dd.joker ? 'Joker gün: bu akşam izin. ' : dd.bad ? 'Kötü gün, telafi yok. ' : '';
+  return card('Bugün', null, {title: 'Program tamam.', text: `${why}Bugün +${nf.format(dayXP([key]))} puan. Yarın devam.`});
 }
 
 /* ---------- görünümler ---------- */
+// Seviye şeridi: seviye, ilerleme, cüzdan. Dokununca puan ve ödüller açılır.
+function levelBar(g, todayGain) {
+  const p = g.need ? g.into / g.need * 100 : 0;
+  return `<button class="lvl" type="button" data-act="rewards" aria-label="Seviye ${g.level}, ${g.xp} puan. Puan ve ödüller">
+    <span class="lvl-no" aria-hidden="true">${g.level}</span>
+    <span class="lvl-t"><strong>Seviye ${g.level} · ${esc(g.rank)}</strong><span class="lvl-bar"><i style="width:${p.toFixed(1)}%"></i></span>
+      <small>${nf.format(g.into)} / ${nf.format(g.need)} puan${todayGain ? ` · bugün +${nf.format(todayGain)}` : ''}</small></span>
+    <span class="lvl-w"><b>${nf.format(Math.max(0, g.balance))}</b><small>cüzdan</small></span></button>`;
+}
+const coreTitles = () => sortBlocks(S.routine.filter(b => b.core)).map(b => b.title);
 function viewToday() {
-  const d = today(), key = iso(d), w = dow(d), dd = dayDoc(key), fp = focusPhase(), bl = blocksFor(d), c = dayCount(key, d);
-  const core = coreBlock(), coreT = core ? core.title : '';
-  const tot = bl.filter(b => !dd.bad || b.core).reduce((s, b) => s + blockMin(b), 0);
+  const d = today(), key = iso(d), w = dow(d), dd = dayDoc(key), fp = focusPhase(), plan = dayPlan(key), c = dayCount(key), g = game();
+  const tot = plan.blocks.filter(b => !b.dim).reduce((s, b) => s + b.mins, 0) + plan.tasks.filter(t => !plan.blocks.some(b => b.kids.includes(t))).reduce((s, t) => s + t.mins, 0);
   let h = `<header class="head">${top(greeting())}<div class="hero with-ring"><div><h1>${DOW_L[w]}</h1><p class="sub">${d.getDate()} ${MON_L[d.getMonth()]} · ${monthLine(d)}</p></div>${ring(c.done, c.total)}</div></header>`;
-  h += nowCard(d, key, bl, dd);
+  h += levelBar(g, dayXP([key]));
+  h += nowCard(key, plan);
   if (energyRule()) h += `<div class="banner"><strong>Enerji kuralı</strong>Enerji iki haftadır 2/5 ya da altında. Bu hafta ara ver, plan bir hafta kayar.</div>`;
+  h += notifyPrompt();
 
-  h += `<section class="card"><div class="card-head"><h2>Program</h2><span class="count">${tot ? fmtDur(tot) : ''}</span></div>
-    ${bl.length ? `<div class="tl">${bl.map(b => blockRow(b, key, dd.bad, false)).join('')}</div>` : '<p class="empty">Bugün için şablonda blok yok.</p>'}</section>`;
+  h += `<section class="card"><div class="card-head"><h2>Bugünün planı</h2><span class="count">${tot ? fmtDur(tot) : ''}</span></div>
+    ${plan.timed.length ? `<div class="tl">${plan.timed.map(it => itemRow(it, key)).join('')}</div>` : '<p class="empty">Bugün için saatli madde yok.</p>'}
+    ${plan.untimed.length ? `<p class="sub-h">Saati yok</p><div class="tl">${plan.untimed.map(it => itemRow(it, key)).join('')}</div>
+      <p class="hint">Saat ver: maddeye dokun, Düzenle. Sıralama ve hatırlatma saate göre çalışır.</p>` : ''}
+    <button class="add-inline" type="button" data-act="add" data-due="${key}">+ Bugüne iş ekle</button></section>`;
 
-  const only = coreT ? esc(coreT) : 'her koşulda yapılan bloklar';
+  const late = S.tasks.filter(t => forMe(t) && !t.done && t.due && t.due < key).sort((a, b) => String(a.due).localeCompare(String(b.due)));
+  if (late.length) h += `<section class="card"><div class="card-head"><h2>Gecikenler</h2><span class="count">${late.length}</span></div>${late.map(t => taskRow(t, {pull: true})).join('')}</section>`;
+
+  const ct = coreTitles(), only = ct.length ? ct.join(', ') : 'her koşulda yapılan bloklar';
   const lit = n => dd.energy && n <= dd.energy && n !== dd.energy ? ' lit' : '';
-  h += `<section class="card"><div class="card-head"><h2>Günün durumu</h2></div>
+  h += `<section class="card"><div class="card-head"><h2>Günün durumu</h2>${dd.joker ? '<span class="pill">Joker</span>' : ''}</div>
     <div class="segc" role="group" aria-label="Gün türü"><button type="button" data-act="setBad" data-v="0" data-date="${key}" aria-pressed="${!dd.bad}">Normal gün</button>
       <button type="button" class="bad" data-act="setBad" data-v="1" data-date="${key}" aria-pressed="${!!dd.bad}">Kötü gün</button></div>
-    <p class="hint">${dd.bad ? `Sadece ${only} sayılır. Telafi yok.` : `Zor bir günse kötü günü seç: sadece ${only} sayılır.`}</p>
+    <p class="hint">${dd.bad ? `Sadece şunlar sayılır: ${esc(only)}. Telafi yok, diğer zincirler kırılmaz.` : `Zor bir günse kötü günü seç. Sadece şunlar sayılır: ${esc(only)}.`}</p>
     <div class="energy"><div class="energy-l"><b>Enerji</b><small>1 düşük, 5 yüksek</small></div>
       ${[1, 2, 3, 4, 5].map(n => `<button class="en${lit(n)}" type="button" data-act="energy" data-date="${key}" data-n="${n}" aria-pressed="${dd.energy === n}" aria-label="Enerji ${n}">${n}</button>`).join('')}</div>
   </section>`;
 
-  const tk = S.tasks.filter(t => forMe(t) && ((!t.done && t.due && t.due <= key) || (t.done && t.doneAt === key && t.due)))
-    .sort((a, b) => (a.done - b.done) || String(a.due || '').localeCompare(String(b.due || '')) || byOrder(a, b));
-  h += `<section class="card"><div class="card-head"><h2>Bugünün işleri</h2><span class="count">${tk.filter(t => t.done).length}/${tk.length}</span></div>
-    ${tk.length ? tk.map(t => taskRow(t)).join('') : '<p class="empty">Bugüne iş atanmadı. Aşağıdan birini bugüne al ya da + ile ekle.</p>'}</section>`;
   if (fp) {
     const next = tasksOf(fp.id).filter(t => !t.done && !t.due && t.kind !== 'gate' && forMe(t)).slice(0, 4);
-    h += `<section class="card"><div class="card-head"><h2>Sıradaki</h2><span class="count">${esc(fp.no)} · ${esc(fp.title)}</span></div>
+    h += `<section class="card"><div class="card-head"><h2>Sıradaki işler</h2><span class="count">${esc(fp.no)} · ${esc(fp.title)}</span></div>
+      <p class="note">Tarihi olmayan işler. “Bugüne al” deyince bugünkü bloğa saatiyle yerleşir.</p>
       ${next.length ? next.map(t => taskRow(t, {pull: true})).join('') : `<p class="empty">Bu aşamada ${shared() ? 'sana düşen ' : ''}tarihsiz açık iş kalmadı.</p>`}</section>`;
   }
   h += partnerCard(key);
@@ -304,37 +499,63 @@ function viewWeek() {
   if (S.tplEdit) return viewTemplate();
   const mon = addDays(monday(today()), S.weekOff * 7), sun = addDays(mon, 6), tkey = todayKey(), monKey = iso(mon);
   const keys = Array.from({length: 7}, (_, i) => iso(addDays(mon, i)));
-  const sel = S.selDay && keys.includes(S.selDay) ? S.selDay : keys.includes(tkey) ? tkey : keys[0];
-  const fa = focusArea(), core = coreBlock();
-  let faPlan = 0, faDone = 0, coreDays = 0, coreTotal = 0;
-  keys.forEach(k => {
-    const bl = blocksFor(parse(k));
-    bl.forEach(b => { if (fa && b.area === fa) { const mm = blockMin(b); faPlan += mm; if (isDone(k, b.id)) faDone += mm; } });
-    if (core && bl.some(b => b.id === core.id)) { coreTotal++; if (isDone(k, core.id)) coreDays++; }
-  });
+  const fa = focusArea();
+  let faPlan = 0, faDone = 0;
+  keys.forEach(k => blocksFor(parse(k)).forEach(b => { if (fa && b.area === fa) { const mm = blockMin(b); faPlan += mm; if (isDone(k, b.id)) faDone += mm; } }));
   const en = weekEnergy(mon);
   const label = {0: 'Bu hafta', '-1': 'Geçen hafta', 1: 'Gelecek hafta'}[S.weekOff] || (S.weekOff < 0 ? `${-S.weekOff} hafta önce` : `${S.weekOff} hafta sonra`);
   let h = `<header class="head">${top(label)}<div class="weekbar"><button class="nav" type="button" data-act="weekPrev" aria-label="Önceki hafta">${SVG('<path d="m15 6-6 6 6 6"/>')}</button>
     <h1>${mon.getDate()} ${MON_S[mon.getMonth()]} – ${sun.getDate()} ${MON_S[sun.getMonth()]}</h1>
     <button class="nav" type="button" data-act="weekNext" aria-label="Sonraki hafta">${SVG('<path d="m9 6 6 6-6 6"/>')}</button></div></header>`;
-  h += `<div class="strip" role="group" aria-label="Günler">${keys.map((k, i) => {
-    const d = parse(k), c = dayCount(k, d), p = c.total ? c.done / c.total * 100 : 0;
-    return `<button class="sd${k === sel ? ' is-sel' : ''}${k === tkey ? ' is-today' : ''}" type="button" data-act="pickDay" data-date="${k}" aria-pressed="${k === sel}" aria-label="${DOW_L[i + 1]} ${d.getDate()}">
-      <span class="sd-w">${DOW_S[i + 1]}</span><span class="sd-n">${d.getDate()}</span><span class="sd-bar">${k > tkey ? '' : `<i style="width:${p}%"></i>`}</span></button>`;
-  }).join('')}</div>`;
-  h += `<section class="stats">
-      <div class="stat"><span class="k">${esc(fa ? areaLabel(fa) : 'Odak alanı')}</span><span class="v">${nf1.format(faDone / 60)} <small>/ ${nf1.format(faPlan / 60)} sa</small></span></div>
-      <div class="stat"><span class="k">${esc(core ? core.title : 'Temel blok')}</span><span class="v">${core ? coreDays : '–'} <small>/ ${core ? coreTotal : 7} gün</small></span></div>
-      <div class="stat"><span class="k">Enerji ort.</span><span class="v">${en ? nf1.format(en.avg) : '–'} <small>/ 5</small></span></div></section>`;
 
-  const d = parse(sel), w = dow(d), dd = dayDoc(sel), bl = blocksFor(d), tasks = S.tasks.filter(t => t.due === sel).sort(byOrder), c = dayCount(sel, d);
-  const onlyDaily = bl.every(b => b.dow === 0), future = sel > tkey;
-  h += `<section class="card"><div class="card-head"><h2>${DOW_L[w]}, ${d.getDate()} ${MON_L[d.getMonth()]}</h2>
-      <div class="pills">${sel === tkey ? '<span class="pill">Bugün</span>' : ''}${dd.bad ? '<span class="pill warn">Kötü gün</span>' : ''}${future ? '' : `<span class="count">${c.done}/${c.total}</span>`}</div></div>
-    ${onlyDaily ? `<p class="note">${core ? `Boş akşam. Sadece ${esc(core.title)}.` : 'Akşam programı yok.'}</p>` : ''}
-    <div class="tl">${bl.map(b => blockRow(b, sel, dd.bad, future)).join('')}</div>
-    ${tasks.length ? `<div class="day-tasks">${tasks.map(t => taskRow(t)).join('')}</div>` : ''}
-    <button class="add-inline" type="button" data-act="add" data-due="${sel}">+ Bu güne iş ekle</button></section>`;
+  const counts = keys.map(k => dayCount(k)), wDone = counts.reduce((s, c) => s + c.done, 0), wTot = counts.reduce((s, c) => s + c.total, 0);
+  h += `<section class="stats">
+      <div class="stat"><span class="k">Tamamlanan</span><span class="v">${wDone} <small>/ ${wTot}</small></span></div>
+      <div class="stat"><span class="k">Bu hafta puan</span><span class="v">+${nf.format(dayXP(keys))}</span></div>
+      <div class="stat"><span class="k">${esc(fa ? areaLabel(fa) : 'Odak alanı')} saati</span><span class="v">${nf1.format(faDone / 60)} <small>/ ${nf1.format(faPlan / 60)}</small></span></div></section>`;
+
+  // Bu haftanın hedefi: şu anki aşama, kapı şartları ve bana düşen işlerin durumu.
+  const fp = S.weekOff === 0 ? focusPhase() : null;
+  if (fp) {
+    const ts = tasksOf(fp.id), mine = ts.filter(t => t.kind !== 'gate' && forMe(t)), gts = ts.filter(t => t.kind === 'gate');
+    h += `<section class="card goal"><div class="card-head"><h2>Bu haftanın hedefi</h2><span class="count">${esc(fp.no)} · ${esc(fp.title)}</span></div>
+      <p class="note">${fp.gateLabel ? `Kapı: ${esc(fp.gateLabel)}. ` : ''}Hafta bitmeden bunlar tamam olmalı:</p>
+      ${gts.length ? gts.map(t => taskRow(t)).join('') : '<p class="empty">Bu aşamada kapı şartı yok.</p>'}
+      <p class="hint">Sana düşen işler: ${mine.filter(t => t.done).length}/${mine.length} bitti. Tamamı Plan’da.</p></section>`;
+  }
+
+  // Her gün: alışkanlık tablosu. Hücreler günün tarihi; dolu = yapıldı. Geçmiş ve bugün işaretlenebilir.
+  const hs = habits(), g = game();
+  if (hs.length) {
+    h += `<section class="card"><div class="card-head"><h2>Her gün</h2><span class="count">zincir</span></div>
+      ${hs.map(b => {
+        const s = g.streaks.get(b.id) || {cur: 0};
+        return `<div class="hab"><div class="hab-top"><span class="hab-t"><b>${esc(b.title)}</b><small>${esc(b.start || 'Gün içi')}${b.core ? ' · her koşulda' : ''}</small></span>
+          <span class="flame${s.cur ? '' : ' off'}">${FLAME}${s.cur}</span></div>
+          <div class="hab-cells">${keys.map((k, i) => {
+            const dd = dayDoc(k), done = isDone(k, b.id), fut = k > tkey, excused = !done && (dd.joker || (dd.bad && !b.core));
+            const cls = done ? ' on' : fut ? ' fut' : excused ? ' exc' : k === tkey ? ' now' : ' miss';
+            return `<button class="hc${cls}" type="button" data-act="toggleBlock" data-id="${esc(b.id)}" data-date="${k}" aria-pressed="${done}" aria-label="${esc(b.title)} · ${DOW_L[i + 1]}"${fut ? ' disabled' : ''}><small>${DOW_S[i + 1].slice(0, 2)}</small>${parse(k).getDate()}</button>`;
+          }).join('')}</div></div>`;
+      }).join('')}</section>`;
+  }
+
+  // Günler: her günün kendine özgü blokları ve işleri. Bugün açık gelir; diğerine dokununca açılır.
+  const defOpen = keys.includes(tkey) ? tkey : keys[0];
+  h += `<section class="card days"><div class="card-head"><h2>Günler</h2><span class="count">her gün listesi hariç</span></div>
+    ${keys.map((k, i) => {
+      const p = dayPlan(k, {noHabits: true}), c = counts[i], dd = p.dd, isOpen = S.openDays[k] ?? (k === defOpen), fut = k > tkey;
+      const items = [...p.timed, ...p.untimed];
+      const sum = items.length ? items.map(x => `${x.start ? x.start + ' ' : ''}${x.title}${x.kids.length ? ` (${x.kids.length} iş)` : ''}`).join(' · ') : 'Boş akşam: sadece her gün listesi';
+      const prog = fut ? `<span class="count">${c.total} madde</span>` : `<span class="count${c.total && c.done === c.total ? ' ok' : ''}">${c.done}/${c.total}</span>`;
+      return `<div class="day${k === tkey ? ' is-today' : ''}${isOpen ? ' is-open' : ''}">
+        <button class="day-head" type="button" data-act="dayOpen" data-date="${k}" aria-expanded="${isOpen}">
+          <span class="day-n"><b>${parse(k).getDate()}</b><small>${DOW_S[i + 1]}</small></span>
+          <span class="day-t"><strong>${DOW_L[i + 1]}${k === tkey ? ' · bugün' : ''}${dd.bad ? ' · kötü gün' : ''}${dd.joker ? ' · joker' : ''}</strong><small>${esc(sum)}</small></span>
+          <span class="day-r">${prog}${CHEV}</span></button>
+        ${isOpen ? `<div class="day-body">${items.length ? `<div class="tl">${items.map(it => itemRow(it, k, fut)).join('')}</div>` : '<p class="empty">Bu gün için blok ya da iş yok.</p>'}
+          <button class="add-inline" type="button" data-act="add" data-due="${k}">+ Bu güne iş ekle</button></div>` : ''}</div>`;
+    }).join('')}</section>`;
 
   const rv = S.weeks[reviewId(monKey)];
   const rvBody = r => r && (r.good || r.stuck || r.next) ? `<dl>${r.good ? `<div><dt>İyi giden</dt><dd>${esc(r.good)}</dd></div>` : ''}${r.stuck ? `<div><dt>Takılan</dt><dd>${esc(r.stuck)}</dd></div>` : ''}${r.next ? `<div><dt>Gelecek haftanın önceliği</dt><dd>${esc(r.next)}</dd></div>` : ''}</dl>` : '';
@@ -347,6 +568,7 @@ function viewWeek() {
     rvHtml = parts.join('');
   } else rvHtml = rvBody(rv) || '<p class="note">Pazar, 15 dk: ne iyi gitti, nerede takıldın, gelecek haftanın 3 önceliği.</p>';
   h += `<section class="card review"><div class="card-head"><h2>Haftalık değerlendirme</h2><button class="link" type="button" data-act="review" data-week="${monKey}">${rv ? 'Düzenle' : 'Yaz'}</button></div>
+    <p class="note">Enerji ortalaması ${en ? nf1.format(en.avg) : '–'} / 5 · yazınca +${XP.review} puan</p>
     ${rvHtml}</section>`;
   h += `<button class="ghost" type="button" data-act="tplEdit">${SVG('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>')}Haftalık şablonu düzenle</button>`;
   return h;
@@ -359,7 +581,7 @@ function viewTemplate() {
     const bl = sortBlocks(S.routine.filter(b => b.dow === n)), tot = bl.reduce((s, b) => s + blockMin(b), 0);
     h += `<section class="card"><div class="card-head"><h2>${n === 0 ? 'Her gün' : DOW_L[n]}</h2><span class="count">${tot ? fmtDur(tot) : ''}</span></div>
       ${bl.map(b => `<div class="row"><button class="row-main" type="button" data-act="editBlock" data-id="${esc(b.id)}"><span class="row-title">${esc(b.title)}</span>
-        <span class="row-meta"><b>${esc(b.start ? (b.end ? `${b.start}–${b.end}` : b.start) : 'Gün içi')}</b><span class="sep">·</span>${dot(b.area)}${esc(areaLabel(b.area))}${b.core ? '<span class="sep">·</span>her koşulda' : ''}</span></button></div>`).join('')}
+        ${b.note ? `<span class="row-desc">${esc(brief(b.note))}</span>` : ''}<span class="row-meta"><b>${esc(b.start ? (b.end ? `${b.start}–${b.end}` : b.start) : 'Gün içi')}</b><span class="sep">·</span>${dot(b.area)}${esc(areaLabel(b.area))}${b.core ? '<span class="sep">·</span>her koşulda' : ''}</span></button></div>`).join('')}
       <button class="add-inline" type="button" data-act="addBlock" data-dow="${n}">+ Blok ekle</button></section>`;
   }
   return h;
@@ -459,7 +681,7 @@ function draw() {
   document.querySelectorAll('.tab').forEach(b => b.dataset.tab === S.tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   if (!S.running || !S.got.tasks || !S.got.routine || !S.got.phases) return;
   const v = $('#view');
-  S.akeys = null;
+  S.akeys = null; S.gx = null;
   v.innerHTML = (!S.tasks.length && !S.routine.length && !S.phases.length) ? emptyView()
     : ({bugun: viewToday, hafta: viewWeek, plan: viewPlan, liste: viewList}[S.tab] || viewToday)();
   v.removeAttribute('aria-busy');
@@ -478,11 +700,21 @@ function write(path, fn) {
     return false;
   });
 }
+// Aynı belgeye art arda yazmalar sıraya girer: yeni bir gün belgesine iki hızlı dokunuş birbirini ezmesin.
+const upq = new Map();
 function upsert(path, patch, base) {
-  return write(path, async () => {
+  const p = (upq.get(path) || Promise.resolve()).then(() => write(path, async () => {
     const ref = db.doc(path), snap = await ref.get();
     if (snap.exists) await ref.update(patch); else await ref.set({...base, ...patch});
-  });
+  }));
+  upq.set(path, p);
+  p.then(() => { if (upq.get(path) === p) upq.delete(path); });
+  return p;
+}
+// Kişisel ayarlara yazma: ekranda hemen görünsün diye yerel kopya da güncellenir.
+function setPrefs(patch) {
+  S.prefs = {...(S.prefs || {}), ...patch}; S.cfgC = null; S.akeys = null; S.gx = null;
+  return upsert('prefs/app', patch, {});
 }
 // Ekranda hemen göster; depo anlık görüntüsü aynı mikro görevde yerine geçer.
 function localDay(k, patch) {
@@ -506,7 +738,8 @@ function listen() {
   col('tasks', 'shTasks', mergeTasks); col('mytasks', 'myTasks', mergeTasks);
   col('routine', 'routine'); col('phases', 'phases'); col('ideas', 'ideas');
   db.collection('weeks').onSnapshot(s => { const o = {}; s.docs.forEach(x => { o[x.id] = x.data(); }); S.weeks = o; render(); }, fail('weeks'));
-  db.collection('days').orderBy('date', 'desc').limit(150).onSnapshot(s => { const o = {}; s.docs.forEach(x => { o[x.id] = x.data(); }); S.days = o; render(); }, fail('days'));
+  // Zincir ve puan geçmişe bakar: yaklaşık iki yıllık gün belgesi.
+  db.collection('days').orderBy('date', 'desc').limit(800).onSnapshot(s => { const o = {}; s.docs.forEach(x => { o[x.id] = x.data(); }); S.days = o; render(); }, fail('days'));
   db.doc('metrics/main').onSnapshot(s => { S.metrics = s.exists ? s.data() : null; render(); }, fail('metrics'));
   db.doc('settings/app').onSnapshot(s => { S.settings = s.exists ? s.data() : null; S.akeys = null; S.cfgC = null; render(); }, fail('settings'));
   db.doc('prefs/app').onSnapshot(s => { S.prefs = s.exists ? s.data() : null; S.akeys = null; S.cfgC = null; render(); }, fail('prefs'));
@@ -632,11 +865,14 @@ function taskForm(t) {
     <label class="fld"><span>Ne yapılacak?</span><input class="big" id="f-title" name="title" required maxlength="200" value="${esc(t.title)}" placeholder="Örn. Teklif metnini bitir"></label>
     ${vis}
     <div class="fld"><span>Tarih</span><div class="chips">${dateChips(t.due)}</div><input type="date" id="f-due" name="due" value="${esc(t.due || '')}" aria-label="Tarih seç"></div>
+    <div class="grid2"><label class="fld"><span>Saat</span><input type="time" id="f-time" name="time" value="${esc(t.time || '')}"></label>
+      <label class="fld"><span>Süre, dk</span><input type="number" id="f-min" name="min" min="5" max="600" step="5" inputmode="numeric" value="${esc(t.min || '')}" placeholder="30"></label></div>
+    <p class="note fld-note">Tarih verip saati boş bırakırsan o günün bloğunda ilk boş saate yerleşir.</p>
     <div class="grid2"><label class="fld shared-only"><span>Aşama</span><select id="f-phase" name="phase"><option value="">Gelen kutusu</option>${phases().map(x => `<option value="${esc(x.id)}"${x.id === t.phase ? ' selected' : ''}>${esc(x.no)}: ${esc(x.title)}</option>`).join('')}</select></label>
       <label class="fld"><span>Alan</span><select id="f-area" name="area">${areaOpts(t.area)}</select></label></div>
     <div class="fld shared-only"><span>Kim</span><div class="seg${opts.length === 2 ? ' two' : ''}">${opts.map(([v, l]) => `<label><input type="radio" name="who" value="${esc(v)}"${who === v ? ' checked' : ''}><span>${esc(l)}</span></label>`).join('')}</div></div>
     <label class="check shared-only"><input type="checkbox" id="f-gate" name="gate"${t.kind === 'gate' ? ' checked' : ''}> Kapı şartı (aşamanın geçiş koşulu)</label>
-    <label class="fld"><span>Not</span><textarea id="f-note" name="note" rows="2" maxlength="1000">${esc(t.note || '')}</textarea></label>
+    <label class="fld"><span>Açıklama</span><textarea id="f-note" name="note" rows="5" maxlength="2000" placeholder="Ne: …&#10;Nasıl: …&#10;Bitti sayılır: …&#10;(madde için satır başına - koy)">${esc(t.note || '')}</textarea></label>
     ${!isNew && shared() && t.createdBy && t.createdBy !== S.me ? `<p class="note">${esc(memberName(t.createdBy))} ekledi.</p>` : ''}
     <div class="actions">${isNew ? '' : `<button type="button" class="danger" data-act="delTask" data-id="${esc(t.id)}">Sil</button>`}<button type="submit" class="primary">Kaydet</button></div></form>`;
 }
@@ -654,6 +890,7 @@ function blockForm(b, presetDow) {
     <div class="grid2"><label class="fld"><span>Başlangıç</span><input type="time" id="b-start" name="start" value="${esc(b.start || '')}"></label>
       <label class="fld"><span>Bitiş</span><input type="time" id="b-end" name="end" value="${esc(b.end || '')}"></label></div>
     <label class="fld"><span>Süre, dk (saat girilmediyse)</span><input type="number" id="b-min" name="min" min="0" step="5" inputmode="numeric" value="${esc(b.min || '')}"></label>
+    <label class="fld"><span>Açıklama: bu blokta ne yapılır?</span><textarea id="b-note" name="note" rows="3" maxlength="1000">${esc(b.note || '')}</textarea></label>
     <label class="check"><input type="checkbox" id="b-core" name="core"${b.core ? ' checked' : ''}> Kötü günde de yapılır</label>
     <div class="actions">${isNew ? '' : `<button type="button" class="danger" data-act="delBlock" data-id="${esc(b.id)}">Sil</button>`}<button type="submit" class="primary">Kaydet</button></div></form>`;
 }
@@ -707,6 +944,175 @@ function planForm() {
     <div class="actions"><button type="submit" class="primary">Kaydet</button></div></form>`;
 }
 
+/* ---------- ayrıntı: bir iş ya da blok, tam açıklamasıyla ---------- */
+function detailSheet(k, id, key) {
+  const dl = (a, b) => b ? `<div><dt>${a}</dt><dd>${b}</dd></div>` : '';
+  if (k === 't') {
+    const t = S.tasks.find(x => x.id === id);
+    if (!t) return '';
+    const ph = t.phase && S.phases.find(p => p.id === t.phase);
+    const when = [t.due ? dueLabel(t.due)[0] : 'Tarihsiz', t.time ? `${t.time}–${addMin(t.time, taskMin(t))}` : '', t.min || t.time ? fmtDur(taskMin(t)) : ''].filter(Boolean).join(' · ');
+    const canPull = !t.done && t.due !== todayKey();
+    return `${head(t.kind === 'gate' ? 'Kapı şartı' : 'İş')}
+      <p class="dt-when">${esc(when)}</p><h3 class="dt-title">${esc(t.title)}</h3>
+      <div class="desc">${richText(t.note) || '<p class="muted">Açıklama yok. Düzenle’den ekleyebilirsin.</p>'}</div>
+      <dl class="dt-meta">${dl('Alan', esc(t.area ? areaLabel(t.area) : 'Kişisel'))}${shared() ? dl('Kim', esc(t._mine ? 'Sadece ben' : whoLabel(t.who))) : ''}
+        ${dl('Aşama', ph ? esc(`${ph.no}: ${ph.title}`) : '')}${dl('Puan', `+${t.kind === 'gate' ? XP.gate : XP.task}`)}
+        ${shared() && t.createdBy && t.createdBy !== S.me ? dl('Ekleyen', esc(memberName(t.createdBy))) : ''}${t.done && t.doneBy ? dl('Bitiren', esc(memberName(t.doneBy))) : ''}</dl>
+      <div class="actions"><button type="button" class="btn-sec" data-act="editTask" data-id="${esc(t.id)}">Düzenle</button>
+        ${canPull ? `<button type="button" class="btn-sec" data-act="pullToday" data-id="${esc(t.id)}" data-close="1">Bugüne al</button>` : ''}
+        <button type="button" class="primary" data-act="toggleTask" data-id="${esc(t.id)}" data-close="1">${t.done ? 'Geri al' : 'Bitti'}</button></div>`;
+  }
+  const b = S.routine.find(x => x.id === id);
+  if (!b) return '';
+  key = key || todayKey();
+  const done = isDone(key, b.id), mm = blockMin(b), dd = dayDoc(key), dim = dd.joker || (dd.bad && !b.core);
+  const when = [b.dow === 0 ? 'Her gün' : DOW_L[b.dow], b.start ? `${b.start}${b.end ? `–${b.end}` : ''}` : 'Gün içi', mm ? fmtDur(mm) : ''].filter(Boolean).join(' · ');
+  const kids = dayPlan(key).blocks.find(x => x.id === b.id);
+  const s = b.dow === 0 ? game().streaks.get(b.id) : null;
+  const tot = s && b.unit && b.qty ? ` · toplam ${nf.format(s.total * Number(b.qty))} ${esc(b.unit)}` : s ? ` · toplam ${s.total} gün` : '';
+  return `${head(b.dow === 0 ? 'Her gün' : 'Program bloğu')}
+    <p class="dt-when">${esc(when)}</p><h3 class="dt-title">${esc(b.title)}</h3>
+    <div class="desc">${richText(b.note) || '<p class="muted">Açıklama yok. Şablondan ekleyebilirsin.</p>'}</div>
+    ${kids && kids.kids.length ? `<p class="sub-h">Bu bloktaki işler</p>${kids.kids.map(c => taskRow(c.t, {note: false})).join('')}` : ''}
+    <dl class="dt-meta">${dl('Alan', esc(areaLabel(b.area)))}${s ? dl('Zincir', `${s.cur} gün · en iyi ${s.best}${tot}`) : ''}
+      ${dl('Kötü günde', b.core ? 'Yine yapılır' : 'Sayılmaz, zinciri kırmaz')}${dl('Puan', `+${XP.block}`)}</dl>
+    <div class="actions"><button type="button" class="btn-sec" data-act="editBlock" data-id="${esc(b.id)}">Şablonda düzenle</button>
+      ${key > todayKey() || dim ? '' : `<button type="button" class="primary" data-act="toggleBlock" data-id="${esc(b.id)}" data-date="${key}" data-close="1">${done ? 'Geri al' : 'Bitti'}</button>`}</div>`;
+}
+
+/* ---------- puan ve ödüller ---------- */
+function badgeList(g) {
+  const best = Math.max(0, ...[...g.streaks.values()].map(s => s.best));
+  const pages = habits().filter(h => h.unit === 'sayfa').reduce((s, h) => s + ((g.streaks.get(h.id) || {}).total || 0) * (Number(h.qty) || 0), 0);
+  return [
+    ['İlk adım', 'İlk maddeyi bitir', g.blocks + g.tasks + g.gates >= 1],
+    ['İlk tam gün', 'Bir günün her maddesi', g.full >= 1],
+    ['3 gün', '3 günlük zincir', best >= 3],
+    ['7 gün', '7 günlük zincir', best >= 7],
+    ['30 gün', '30 günlük zincir', best >= 30],
+    ['100 gün', '100 günlük zincir', best >= 100],
+    ['10 tam gün', '10 kez tam gün', g.full >= 10],
+    ['İlk kapı', 'Bir kapı şartını bitir', g.gates >= 1],
+    ['25 iş', '25 iş bitir', g.tasks >= 25],
+    ['4 hafta', '4 haftalık değerlendirme', g.reviews >= 4],
+    ['100 sayfa', 'Toplam 100 sayfa', pages >= 100],
+    ['1000 sayfa', 'Toplam 1000 sayfa', pages >= 1000],
+    ['Çırak', 'Seviye 5', g.level >= 5],
+    ['Kalfa', 'Seviye 10', g.level >= 10],
+  ];
+}
+function rewardsSheet() {
+  const g = game(), list = rewards(), last = spentList().slice(-5).reverse(), bs = badgeList(g), p = g.need ? g.into / g.need * 100 : 0;
+  const jokerToday = !!dayDoc(todayKey()).joker;
+  return `${head('Puan ve ödüller')}
+    <div class="lvl-card"><span class="lvl-no big" aria-hidden="true">${g.level}</span><div class="lvl-t"><strong>Seviye ${g.level} · ${esc(g.rank)}</strong>
+      <span class="lvl-bar"><i style="width:${p.toFixed(1)}%"></i></span><small>Sonraki seviyeye ${nf.format(g.need - g.into)} puan · toplam ${nf.format(g.xp)}</small></div></div>
+    <div class="wallet"><span>Cüzdan</span><b>${nf.format(Math.max(0, g.balance))} puan</b><small>Ödül alınca cüzdan azalır, seviye düşmez.</small></div>
+    <h3 class="sh">Ödüller</h3>
+    ${list.map(r => {
+      const can = g.balance >= r.cost && !(r.joker && jokerToday);
+      return `<div class="row"><div class="row-main"><span class="row-title">${esc(r.title)}</span><span class="row-meta">${nf.format(r.cost)} puan${r.joker && jokerToday ? '<span class="sep">·</span>bugün kullanıldı' : ''}</span></div>
+        <button class="mini" type="button" data-act="buyReward" data-id="${esc(r.id)}"${can ? '' : ' disabled'}>Al</button>
+        <button class="x-btn" type="button" data-act="delReward" data-id="${esc(r.id)}" aria-label="${esc(r.title)} ödülünü sil">${X_ICON}</button></div>`;
+    }).join('')}
+    <form id="f-reward" class="inline-form" autocomplete="off"><input name="title" required maxlength="80" placeholder="Yeni ödül" aria-label="Ödül adı">
+      <input name="cost" type="number" required min="10" max="100000" step="10" inputmode="numeric" placeholder="Puan" aria-label="Puan"><button class="mini" type="submit">Ekle</button></form>
+    ${last.length ? `<h3 class="sh">Son alınanlar</h3>${last.map(x => `<div class="row"><div class="row-main"><span class="row-title">${esc(x.title)}</span>
+      <span class="row-meta">−${nf.format(x.cost)} puan<span class="sep">·</span>${esc(shortDate(String(x.at || '').slice(0, 10)))}</span></div></div>`).join('')}` : ''}
+    <h3 class="sh">Rozetler · ${bs.filter(b => b[2]).length}/${bs.length}</h3>
+    <div class="badges">${bs.map(([t, d, ok]) => `<div class="badge${ok ? ' ok' : ''}"><b>${esc(t)}</b><small>${esc(d)}</small></div>`).join('')}</div>
+    <h3 class="sh">Puan nasıl kazanılır</h3>
+    <ul class="rules"><li>Program bloğu ya da her gün maddesi: <b>+${XP.block}</b></li><li>İş: <b>+${XP.task}</b> · kapı şartı: <b>+${XP.gate}</b></li>
+      <li>Tam gün (günün her maddesi bitti): <b>+${XP.full}</b></li><li>Haftalık değerlendirme: <b>+${XP.review}</b></li>
+      <li>Zincir bonusu: ${MILES.map(([n, x]) => `${n} gün +${x}`).join(' · ')}</li>
+      <li>Kötü günde yalnız “her koşulda” maddeler sayılır; diğerlerinin zinciri kırılmaz. Joker gün hiçbir zinciri kırmaz.</li>
+      <li>Seviye ${RANKS.slice().reverse().map(([n, r]) => `${n}+ ${r}`).join(' · ')}</li></ul>`;
+}
+
+/* ---------- hatırlatmalar (Web Push) ----------
+   Abonelik kişisel "push" koleksiyonunda durur. Sunucu (rota-remind) her dakika saati gelen maddeleri gönderir. */
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext;
+const notifyPrefs = () => ((S.prefs || {}).notify) || {};
+const pushOn = () => pushSupported() && !!S.push.sub && Notification.permission === 'granted' && notifyPrefs().on !== false;
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const ub64 = s => { s = String(s).replace(/-/g, '+').replace(/_/g, '/'); s += '='.repeat((4 - s.length % 4) % 4); return Uint8Array.from(atob(s), c => c.charCodeAt(0)); };
+async function subId(endpoint) { return 'p' + b64u(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(endpoint))).slice(0, 24); }
+async function swReg() { const r = await navigator.serviceWorker.getRegistration(); return r || navigator.serviceWorker.ready; }
+async function saveSub(sub) {
+  const j = sub.toJSON(), id = await subId(j.endpoint), ref = db.doc('push/' + id), cur = await ref.get();
+  if (cur.exists && cur.data().endpoint === j.endpoint) return;
+  await ref.set({endpoint: j.endpoint, keys: j.keys, ua: navigator.userAgent.slice(0, 160), at: new Date().toISOString()});
+}
+// Açılışta: tarayıcıdaki abonelik buluttakiyle aynı mı? Değiştiyse (tarayıcı yenilediyse) yeniden kaydet.
+async function pushInit() {
+  if (!pushSupported()) { S.push.checked = true; return; }
+  try {
+    const reg = await swReg(), sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+    S.push = {sub: sub ? sub.endpoint : null, checked: true};
+    if (sub && Notification.permission === 'granted' && notifyPrefs().on !== false) await saveSub(sub);
+  } catch (e) { S.push.checked = true; console.warn('Rota: bildirim durumu okunamadı', e); }
+  render(); refreshNotify();
+}
+async function notifyOn(btn) {
+  if (!pushSupported()) { toast('Bu tarayıcı bildirim desteklemiyor.'); return; }
+  if (!navigator.onLine) { toast('Açmak için internet gerekli.'); return; }
+  busy(btn, true);
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast(perm === 'denied' ? 'Bildirim izni kapalı. Chrome > Site ayarları > Bildirimler.' : 'Bildirim izni verilmedi.', {ms: 4500}); return; }
+    const reg = await swReg();
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const r = await fetch(FN_URL + '?vapid=1', {cache: 'no-store'});
+      if (!r.ok) throw new Error('sunucu ' + r.status);
+      const {publicKey} = await r.json();
+      sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: ub64(publicKey)});
+    }
+    await saveSub(sub);
+    await setPrefs({notify: {on: true, lead: Number(notifyPrefs().lead) || 0}});
+    S.push.sub = sub.endpoint;
+    toast('Hatırlatmalar açık. Deneme bildirimi geliyor.');
+    notifyTest(true);
+  } catch (e) {
+    console.warn('Rota: bildirim açılamadı', e);
+    toast(/sunucu/.test(String(e && e.message)) ? 'Hatırlatma sunucusu henüz kurulmamış.' : 'Bildirim açılamadı. Yeniden dene.', {ms: 4500});
+  } finally { busy(btn, false); refreshNotify(); render(); }
+}
+async function notifyOff(btn) {
+  busy(btn, true);
+  try {
+    const reg = await swReg(), sub = await reg.pushManager.getSubscription();
+    if (sub) { const id = await subId(sub.endpoint); write('push/' + id, () => db.doc('push/' + id).delete()); await sub.unsubscribe().catch(() => {}); }
+    S.push.sub = null; toast('Hatırlatmalar kapalı');
+  } catch (e) { console.warn(e); } finally { busy(btn, false); refreshNotify(); render(); }
+}
+async function notifyTest(quiet) {
+  try {
+    await window.RotaSync.flush();
+    const {data} = await S.client.auth.getSession(), tok = data && data.session && data.session.access_token;
+    if (!tok) throw new Error('oturum');
+    const r = await fetch(FN_URL, {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + tok}, body: JSON.stringify({test: true})});
+    const j = await r.json().catch(() => ({}));
+    if (!quiet || !j.sent) toast(j.sent ? 'Deneme gönderildi. Birkaç saniye içinde gelir.' : 'Deneme gönderilemedi. Sunucu kurulumunu kontrol et.', {ms: 4000});
+  } catch (e) { toast('Deneme gönderilemedi.'); }
+}
+function notifyCard() {
+  if (!pushSupported()) return `<div class="set-card"><div class="set-sync"><strong>Hatırlatmalar</strong><small>Bu tarayıcı bildirim desteklemiyor. Android’de Chrome’dan yüklenen uygulamada çalışır.</small></div></div>`;
+  const on = pushOn(), denied = Notification.permission === 'denied', lead = Number(notifyPrefs().lead) || 0;
+  return `<div class="set-card col"><div class="set-line"><span class="bell${on ? ' on' : ''}" aria-hidden="true">${BELL}</span><div class="set-sync"><strong>Hatırlatmalar ${on ? 'açık' : 'kapalı'}</strong>
+      <small>${on ? 'Saati gelen blok ve iş telefona bildirim olarak gelir; uygulama kapalıyken de.' : denied ? 'Bildirim izni kapalı: Chrome > Site ayarları > Bildirimler’den aç.' : 'Saatli her blok ve iş için telefona bildirim.'}</small></div>
+      <button class="btn2" type="button" data-act="${on ? 'notifyOff' : 'notifyOn'}"><span>${on ? 'Kapat' : 'Aç'}</span></button></div>
+    ${on ? `<div class="seg" role="radiogroup" aria-label="Ne zaman">${[[0, 'Saatinde'], [5, '5 dk önce'], [10, '10 dk önce']].map(([v, l]) => `<label><input type="radio" name="lead" value="${v}"${lead === v ? ' checked' : ''}><span>${l}</span></label>`).join('')}</div>
+      <button class="link" type="button" data-act="notifyTest">Deneme bildirimi gönder</button>` : ''}</div>`;
+}
+function refreshNotify() { if (S.sheet === 'settings') { const el = $('#setNotify'); if (el) el.innerHTML = notifyCard(); } }
+function notifyPrompt() {
+  if (!S.push.checked || !pushSupported() || pushOn() || Notification.permission === 'denied' || flag('rota-notify-dismissed')) return '';
+  return `<div class="cta"><span class="bell" aria-hidden="true">${BELL}</span><div class="cta-t"><b>Hatırlatmaları aç</b><small>Her maddenin saatinde telefona bildirim gelsin.</small></div>
+    <button class="mini" type="button" data-act="notifyOn">Aç</button><button class="x-btn" type="button" data-act="notifyDismiss" aria-label="Kapat">${X_ICON}</button></div>`;
+}
+
 /* ---------- ayarlar ---------- */
 let bip = null;   // beforeinstallprompt olayı
 const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -726,9 +1132,11 @@ function settingsSheet() {
     <div class="set-card"><i class="sync-dot s-${st}" id="setDot" aria-hidden="true"></i><div class="set-sync" role="status"><strong id="setLine">${esc(l1)}</strong><small id="setSub">${esc(l2)}</small></div>
       <button class="btn2${S.sync && S.sync.syncing ? ' busy' : ''}" type="button" data-act="syncNow" id="syncBtn"><span>Şimdi eşitle</span></button></div>
     <div id="setUpdate">${updateCard()}</div><div id="setInstall">${installBtn()}</div>
+    <div id="setNotify">${notifyCard()}</div>
     ${shared() ? `<div class="set-card space-card"><div class="set-sync"><strong>Ortak alan · ${esc(S.spaceName || 'Ortak')}</strong>
       <small>${esc([S.me, ...partners()].map(k => k === S.me ? `${memberName(k)} (sen)` : memberName(k)).join(', '))}. Plan, işler, göstergeler, fikirler ve haftalık değerlendirmeler ortak; günlük program, enerji ve “Sadece ben” işleri sana özel.</small></div></div>` : ''}
     <div class="set-list">
+      <button class="set-row" type="button" data-act="rewards"><span>Puan ve ödüller</span>${CHEV_R}</button>
       <button class="set-row" type="button" data-act="planSettings"><span>Planı düzenle</span>${CHEV_R}</button>
       <button class="set-row" type="button" data-act="pwSheet"><span>Şifreyi değiştir</span>${CHEV_R}</button>
       <button class="set-row out" type="button" data-act="logout"><span>Çıkış yap</span></button>
@@ -807,6 +1215,11 @@ function applyUpdate() {
 }
 function initSW() {
   if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  // Bildirime dokununca açık uygulama Bugün sekmesine geçer.
+  navigator.serviceWorker.addEventListener('message', e => {
+    const d = e.data || {};
+    if (d.type === 'GOTAB' && TABS.includes(d.tab) && S.running) { closeSheet(); goTab(d.tab); }
+  });
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (wantReload && !reloading) { reloading = true; location.reload(); } });
   navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).then(reg => {
     const onWaiting = w => { waitingSW = w; showUpdateToast(); refreshSettingsExtras(); };
@@ -825,20 +1238,45 @@ function initSW() {
 /* ---------- olaylar ---------- */
 function arm(el, label, fn) {
   if (el.dataset.armed) { fn(); return; }
-  el.dataset.armed = '1'; el.classList.add('armed'); const old = el.textContent; el.textContent = label;
-  setTimeout(() => { if (el.isConnected) { delete el.dataset.armed; el.classList.remove('armed'); el.textContent = old; } }, 3500);
+  el.dataset.armed = '1'; el.classList.add('armed'); const old = el.innerHTML; el.textContent = label;
+  setTimeout(() => { if (el.isConnected) { delete el.dataset.armed; el.classList.remove('armed'); el.innerHTML = old; } }, 3500);
 }
-function toggleTask(task) {
+function toggleTask(task, el) {
   const id = task.id, path = taskPath(task), v = !task.done;
   const patch = {done: v, doneAt: v ? todayKey() : null, doneBy: v ? (S.me || null) : null};
   const back = {done: !!task.done, doneAt: task.doneAt ?? null, doneBy: task.doneBy ?? null};
+  S.gx = null; const before = game();
   if (v) { S.pop = id; buzz(); }
   localTask(id, patch);
   write(path, () => db.doc(path).update(patch));
-  if (v) toast('Tamamlandı', () => { localTask(id, back); write(path, () => db.doc(path).update(back)); });
+  syncFull(task.due);
+  const gain = v ? reward(before, el) : 0;
+  if (v) toast(gain ? `Tamamlandı · +${gain} puan` : 'Tamamlandı', () => { localTask(id, back); write(path, () => db.doc(path).update(back)); syncFull(task.due); });
+}
+function toggleBlock(k, id, el) {
+  const v = !isDone(k, id);
+  S.gx = null; const before = game();
+  if (v) { S.pop = k + ':' + id; buzz(); }
+  localDay(k, {done: {[id]: v}}); upsert('days/' + k, {done: {[id]: v}}, {date: k});
+  syncFull(k);
+  if (v) reward(before, el, id);
+}
+function pullToday(task, el) {
+  const k = todayKey(), time = suggestSlot(k, taskMin(task), task.area, task.id) || task.time || null, path = taskPath(task), patch = {due: k, time};
+  localTask(task.id, patch); write(path, () => db.doc(path).update(patch));
+  syncFull(k);
+  toast(time ? `Bugüne alındı · ${time}` : 'Bugüne alındı. Saat vermek için dokun.');
+}
+function buyReward(r) {
+  const g = game();
+  if (g.balance < r.cost) { toast('Cüzdanda yeterli puan yok.'); return; }
+  setPrefs({spent: [...spentList(), {id: 's' + Date.now().toString(36), rid: r.id, title: r.title, cost: Number(r.cost) || 0, at: new Date().toISOString()}]});
+  if (r.joker) { const k = todayKey(); localDay(k, {joker: true}); upsert('days/' + k, {joker: true}, {date: k, done: {}}); syncFull(k); }
+  toast(r.joker ? 'Joker kullanıldı: bu akşam izin, zincirler güvende.' : `Afiyet olsun · −${nf.format(r.cost)} puan`, {ms: 3200});
+  openSheet(rewardsSheet(), null, 'rewards'); render();
 }
 function openAdd(ds) {
-  const due = ds.due || (!ds.phase && S.tab === 'bugun' ? todayKey() : !ds.phase && S.tab === 'hafta' && S.selDay ? S.selDay : '');
+  const due = ds.due || (!ds.phase && S.tab === 'bugun' ? todayKey() : '');
   S.preset = {phase: ds.phase || '', due};
   openSheet(taskForm(null), '#f-title', 'task');
 }
@@ -853,19 +1291,23 @@ document.addEventListener('click', e => {
     case 'modeTask': openSheet(taskForm(null), '#f-title', 'task'); break;
     case 'modeIdea': case 'addIdea': openSheet(ideaForm(), '#i-text', 'idea'); break;
     case 'editTask': if (task) openSheet(taskForm(task), null, 'task'); break;
-    case 'toggleTask': if (task) toggleTask(task); break;
-    case 'pullToday': if (task) { const path = taskPath(task); localTask(id, {due: todayKey()}); write(path, () => db.doc(path).update({due: todayKey()})); toast('Bugüne alındı'); } break;
-    case 'toggleBlock': {
-      const k = el.dataset.date, v = !isDone(k, id);
-      if (v) { S.pop = k + ':' + id; buzz(); }
-      localDay(k, {done: {[id]: v}}); upsert('days/' + k, {done: {[id]: v}}, {date: k}); break;
-    }
-    case 'setBad': { const k = el.dataset.date, v = el.dataset.v === '1'; if (!!dayDoc(k).bad !== v) { localDay(k, {bad: v}); upsert('days/' + k, {bad: v}, {date: k, done: {}}); } break; }
+    case 'toggleTask': if (task) { toggleTask(task, el); if (el.dataset.close) closeSheet(); } break;
+    case 'pullToday': if (task) { pullToday(task, el); if (el.dataset.close) closeSheet(); } break;
+    case 'toggleBlock': toggleBlock(el.dataset.date, id, el); if (el.dataset.close) closeSheet(); break;
+    case 'detail': { const html = detailSheet(el.dataset.k, id, el.dataset.date); if (html) openSheet(html, null, 'detail'); break; }
+    case 'dayOpen': S.openDays[el.dataset.date] = el.getAttribute('aria-expanded') !== 'true'; draw(); break;
+    case 'rewards': openSheet(rewardsSheet(), null, 'rewards'); break;
+    case 'buyReward': { const r = rewards().find(x => x.id === id); if (r) arm(el, 'Emin misin?', () => buyReward(r)); break; }
+    case 'delReward': arm(el, 'Sil', () => { setPrefs({rewards: rewards().filter(x => x.id !== id)}); openSheet(rewardsSheet(), null, 'rewards'); }); break;
+    case 'notifyOn': notifyOn(el); break;
+    case 'notifyOff': notifyOff(el); break;
+    case 'notifyTest': notifyTest(false); break;
+    case 'notifyDismiss': setFlag('rota-notify-dismissed'); render(); break;
+    case 'setBad': { const k = el.dataset.date, v = el.dataset.v === '1'; if (!!dayDoc(k).bad !== v) { localDay(k, {bad: v}); upsert('days/' + k, {bad: v}, {date: k, done: {}}); syncFull(k); } break; }
     case 'energy': { const k = el.dataset.date, n = Number(el.dataset.n), v = dayDoc(k).energy === n ? 0 : n; localDay(k, {energy: v}); upsert('days/' + k, {energy: v}, {date: k, done: {}}); break; }
     case 'review': openSheet(reviewForm(el.dataset.week), null, 'review'); break;
-    case 'pickDay': S.selDay = el.dataset.date; draw(); break;
-    case 'weekPrev': S.weekOff = Math.max(-20, S.weekOff - 1); S.selDay = null; draw(); break;
-    case 'weekNext': S.weekOff = Math.min(12, S.weekOff + 1); S.selDay = null; draw(); break;
+    case 'weekPrev': S.weekOff = Math.max(-20, S.weekOff - 1); draw(); break;
+    case 'weekNext': S.weekOff = Math.min(12, S.weekOff + 1); draw(); break;
     case 'tplEdit': S.tplEdit = true; S.enter = true; draw(); window.scrollTo(0, 0); break;
     case 'tplDone': S.tplEdit = false; S.enter = true; draw(); break;
     case 'editBlock': { const b = S.routine.find(x => x.id === id); if (b) openSheet(blockForm(b), null, 'block'); break; }
@@ -917,6 +1359,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   if (e.target.id === 'm-month') { const inc = (S.metrics || {}).income || {}; $('#m-inc').value = inc[e.target.value] ?? ''; }
   if (e.target.name === 'vis' && e.target.form) e.target.form.classList.toggle('is-private', e.target.value === 'ben');
+  if (e.target.name === 'lead' && e.target.closest('#setNotify')) { setPrefs({notify: {...notifyPrefs(), lead: Number(e.target.value) || 0}}); toast('Kaydedildi'); }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#sheetWrap').hidden) closeSheet(); });
 document.addEventListener('submit', e => {
@@ -927,9 +1370,15 @@ document.addEventListener('submit', e => {
   if (f.id === 'f-task') {
     const title = str('title'); if (!title) return;
     const priv = shared() && str('vis') === 'ben', colName = priv ? 'mytasks' : 'tasks';
-    const data = {title, note: str('note'), due: str('due') || null, phase: priv ? null : str('phase') || null, area: str('area') || defaultArea(),
+    const id = f.dataset.id, old = id ? S.tasks.find(t => t.id === id) : null;
+    const due = str('due') || null, min = Math.round(Number(str('min'))) || null, area = str('area') || defaultArea();
+    // Tarihli işin saati boşsa o günün bloğunda ilk boş saate yerleşir.
+    let time = /^\d\d:\d\d$/.test(str('time')) ? str('time') : null, auto = false;
+    if (due && !time) { time = suggestSlot(due, min || 30, area, id) || null; auto = !!time; }
+    const data = {title, note: str('note'), due, time, min, phase: priv ? null : str('phase') || null, area,
       who: priv ? S.me : str('who') || (shared() ? S.me : 'ben'), kind: !priv && fd.get('gate') ? 'gate' : 'task'};
-    const id = f.dataset.id, old = id ? S.tasks.find(t => t.id === id) : null; closeSheet();
+    closeSheet();
+    if (auto) setTimeout(() => toast(`Saat verildi: ${dueLabel(due)[0]} ${time}`), 2300);
     if (old && old._col !== colName) {
       // Görünürlük değişti: belge diğer koleksiyona taşınır (aynı kimlikle).
       const moved = {...plain(old), ...data};
@@ -940,12 +1389,17 @@ document.addEventListener('submit', e => {
     } else if (old) { localTask(id, data); write(taskPath(old), () => db.doc(taskPath(old)).update(data)).then(ok => ok && toast('Kaydedildi')); }
     else write(colName + '/new', () => db.collection(colName).add({...data, done: false, doneAt: null, createdAt: new Date().toISOString(), createdBy: S.me || null, order: Date.now()}))
       .then(ok => ok && toast('Eklendi'));
+  } else if (f.id === 'f-reward') {
+    const title = str('title'), cost = Math.round(Number(str('cost')));
+    if (!title || !(cost >= 10)) return;
+    setPrefs({rewards: [...rewards(), {id: 'w' + Date.now().toString(36), title, cost}]});
+    openSheet(rewardsSheet(), null, 'rewards'); toast('Ödül eklendi');
   } else if (f.id === 'f-idea') {
     const text = str('text'); if (!text) return; closeSheet();
     write('ideas/new', () => db.collection('ideas').add({text, by: S.me || null, createdAt: new Date().toISOString()})).then(ok => ok && toast('Fikir defterine eklendi'));
   } else if (f.id === 'f-block') {
     const title = str('title'); if (!title) return;
-    const data = {title, dow: Number(str('dow')), start: str('start'), end: str('end'), area: str('area') || defaultArea(), min: Number(str('min')) || 0, core: !!fd.get('core')};
+    const data = {title, note: str('note'), dow: Number(str('dow')), start: str('start'), end: str('end'), area: str('area') || defaultArea(), min: Number(str('min')) || 0, core: !!fd.get('core')};
     const id = f.dataset.id; closeSheet();
     if (id) write('routine/' + id, () => db.doc('routine/' + id).update(data)).then(ok => ok && toast('Kaydedildi'));
     else write('routine/new', () => db.collection('routine').add({...data, order: Date.now()})).then(ok => ok && toast('Eklendi'));
@@ -1029,7 +1483,7 @@ window.RotaUI = Object.freeze({esc, pwField, busy, toast});
 window.RotaApp = Object.freeze({
   async start(user, client) {
     if (S.running) return;
-    S.running = true; S.user = user; db = window.RotaDB;
+    S.running = true; S.user = user; S.client = client; db = window.RotaDB;
     let mem = cachedMembership(user.id);
     if (!mem && navigator.onLine) {
       mem = await fetchMembership(client, user.id, 5000);
@@ -1043,6 +1497,7 @@ window.RotaApp = Object.freeze({
     listen();
     draw();
     showInstall();
+    pushInit();
     if (navigator.onLine) fetchMembership(client, user.id, 15000).then(fresh => {
       if (!fresh) return;
       try { localStorage.setItem(memKey(user.id), JSON.stringify(fresh)); } catch (e) { /* önemsiz */ }

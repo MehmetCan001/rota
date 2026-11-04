@@ -28,6 +28,20 @@ göstergeler, fikirler ve haftalık değerlendirmeler alanın sahipliğinde duru
 günlük program, günler, "Sadece ben" işleri ve kişisel ayarlar kullanıcıya özel kalır. Erişim yine RLS ile
 belirlenir: kullanıcı kendi kayıtlarını ve üyesi olduğu alanın kayıtlarını görür. Üyelik yalnız SQL ile verilir.
 
+## Hatırlatmalar (1.2)
+
+Saatli program blokları ve işler telefona Web Push bildirimi olarak gelir; uygulama kapalıyken de. Sunucu tarafı
+`supabase/functions/rota-remind` (Edge Function, dış paket yok) ve `supabase/cron.sql` (pg_cron her dakika çağırır).
+Abonelik kişisel `push` koleksiyonunda durur. VAPID anahtarları fonksiyonun ilk çağrısında üretilir ve sistem sahibiyle
+(`00000000-…`) saklanır; RLS kullanıcıların görmesini engeller. Aynı hatırlatma iki kez gitmez (`pushlog` talebi).
+Kurulum: fonksiyonu "Verify JWT" kapalı yayınla, sonra `cron.sql`'i SQL Editor'de çalıştır.
+
+## Puan ve ödüller (1.2)
+
+Puan kayıtlardan hesaplanır: blok +10, iş +20, kapı şartı +50, tam gün +25, haftalık değerlendirme +30, zincir bonusları.
+"Tam gün" gün belgesine (`full`) işlenir. Ödüller ve harcamalar kişisel ayarlarda (`prefs/app`: `rewards`, `spent`);
+joker ödülü günü izinli yapar (`days/<tarih>.joker`), zincir kırılmaz ve o gün hatırlatma gitmez.
+
 ## Dosyalar
 
 - `index.html`, `styles.css`: kabuk ve görünüm
