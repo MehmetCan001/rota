@@ -619,6 +619,7 @@ function viewPlan() {
     <div class="metric"><span class="k">${esc(incLabel())}${it ? ` · eşik ${money(it)}/ay` : ''}</span>
       <div class="months">${months.map(x => { const v = inc[monthKey(x)]; return `<div class="mo${meets(v) ? ' ok' : ''}"><span class="k">${MON_S[x.getMonth()]} ${x.getFullYear()}</span><span class="v">${v != null && v !== '' ? money(v) : '–'}</span></div>`; }).join('')}</div></div>
   </section>`;
+  h += goldCard(months);
 
   ps.forEach(p => {
     const ts = tasksOf(p.id), tasks = ts.filter(t => t.kind !== 'gate'), gts = ts.filter(t => t.kind === 'gate');
@@ -638,6 +639,24 @@ function viewPlan() {
   h += `<div class="plan-tools"><button class="ghost" type="button" data-act="addPhase">${SVG('<path d="M12 5v14M5 12h14"/>')}Aşama ekle</button>
     <button class="ghost" type="button" data-act="planSettings">${SVG('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>')}Planı düzenle</button></div>`;
   return h;
+}
+
+/* ---------- altın birikimi: kişisel ayarlarda (prefs/app.gold), ortağa görünmez ----------
+   gold = {target: hedef gram (ilk kira mülkü kaç gram ediyor), m: {'YYYY-AA': o ay net alınan gram}} */
+const nf2 = new Intl.NumberFormat('tr-TR', {maximumFractionDigits: 2});
+const gram = v => `${nf2.format(Number(v) || 0)} gr`;
+const goldP = () => { const g = (S.prefs || {}).gold; return g && typeof g === 'object' ? g : {}; };
+const goldMonths = () => { const m = goldP().m; return m && typeof m === 'object' ? m : {}; };
+const goldTotal = () => Object.values(goldMonths()).reduce((s, v) => s + (Number(v) || 0), 0);
+function goldCard(months) {
+  const m = goldMonths(), tot = goldTotal(), tgt = Number(goldP().target) || 0, pct = tgt ? Math.max(0, Math.min(100, tot / tgt * 100)) : 0;
+  return `<section class="card"><div class="card-head"><h2>Altın birikimi</h2><button class="link" type="button" data-act="gold">Güncelle</button></div>
+    <div class="metric" style="padding-top:4px"><div class="m-top"><span class="k">Toplam</span><span class="v">${gram(tot)}${tgt ? ` <small>/ ${gram(tgt)}</small>` : ''}</span></div>
+      ${tgt ? `<div class="bar"><i style="width:${pct.toFixed(1)}%"></i><b style="left:25%"></b><b style="left:50%"></b><b style="left:75%"></b></div>
+      <div class="ticks"><span style="left:25%">%25</span><span style="left:50%">%50</span><span style="left:75%">%75</span></div>` : ''}</div>
+    <div class="metric"><span class="k">Ay ay alınan</span>
+      <div class="months">${months.map(x => { const v = m[monthKey(x)]; return `<div class="mo${Number(v) > 0 ? ' ok' : ''}"><span class="k">${MON_S[x.getMonth()]} ${x.getFullYear()}</span><span class="v">${v != null && v !== '' ? gram(v) : '–'}</span></div>`; }).join('')}</div></div>
+    <p class="note">Sadece sen görürsün.${tgt ? '' : ' Hedef olarak ilk kira mülkünün kaç gram altın ettiğini yaz.'}</p></section>`;
 }
 
 function viewList() {
@@ -913,6 +932,18 @@ function metricsForm() {
     <div class="grid2"><label class="fld"><span>Ay</span><select id="m-month" name="month">${ms.map(x => `<option value="${monthKey(x)}">${MON_L[x.getMonth()]} ${x.getFullYear()}</option>`).join('')}</select></label>
       <label class="fld"><span>${esc(incLabel())} (${cur})</span><input type="number" id="m-inc" name="inc" min="0" step="1" inputmode="decimal" placeholder="Girilmedi" value="${esc(inc[monthKey(d)] ?? '')}"></label></div>
     <p class="note">O ayın toplam net geliri.${it ? ` Eşik ${money(it)}/ay.` : ''}${shared() ? ' Göstergeler ortak.' : ''}</p>
+    <div class="actions"><button type="submit" class="primary">Kaydet</button></div></form>`;
+}
+function goldForm() {
+  const m = goldMonths(), d = today(), tgt = goldP().target;
+  const ms = Array.from({length: 6}, (_, k) => new Date(d.getFullYear(), d.getMonth() - k, 1));
+  // Gram alanında inputmode yok: Android klavyesinde eksi işareti (satış) çıksın.
+  return `<form id="f-gold">${head('Altın birikimi')}
+    <div class="grid2"><label class="fld"><span>Ay</span><select id="g-month" name="month">${ms.map(x => `<option value="${monthKey(x)}">${MON_L[x.getMonth()]} ${x.getFullYear()}</option>`).join('')}</select></label>
+      <label class="fld"><span>O ay alınan, gram</span><input type="number" id="g-gr" name="gr" step="0.01" placeholder="Girilmedi" value="${esc(m[monthKey(d)] ?? '')}"></label></div>
+    <p class="note">O ayın toplamı. Sattıysan eksi yaz; boş bırakırsan o ay silinir.</p>
+    <label class="fld"><span>Hedef, gram: ilk kira mülkü kaç gram ediyor?</span><input type="number" id="g-tgt" name="tgt" min="0" step="1" inputmode="numeric" placeholder="Boş" value="${esc(tgt ?? '')}"></label>
+    <p class="note">Hedefi yılda bir güncelle. Bu kart sadece sende; ortağın görmez.</p>
     <div class="actions"><button type="submit" class="primary">Kaydet</button></div></form>`;
 }
 function phaseForm(p) {
@@ -1314,6 +1345,7 @@ document.addEventListener('click', e => {
     case 'addBlock': openSheet(blockForm(null, Number(el.dataset.dow)), '#b-title', 'block'); break;
     case 'phase': { const fp = focusPhase(); S.open[id] = !(S.open[id] ?? (fp && fp.id === id)); draw(); break; }
     case 'metrics': openSheet(metricsForm(), null, 'metrics'); break;
+    case 'gold': openSheet(goldForm(), null, 'gold'); break;
     case 'delIdea': arm(el, 'Emin misin?', () => write('ideas/' + id, () => db.doc('ideas/' + id).delete())); break;
     case 'delTask': if (task) arm(el, 'Emin misin? Sil', () => {
       const copy = plain(task), path = taskPath(task); closeSheet();
@@ -1358,6 +1390,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   if (e.target.id === 'm-month') { const inc = (S.metrics || {}).income || {}; $('#m-inc').value = inc[e.target.value] ?? ''; }
+  if (e.target.id === 'g-month') $('#g-gr').value = goldMonths()[e.target.value] ?? '';
   if (e.target.name === 'vis' && e.target.form) e.target.form.classList.toggle('is-private', e.target.value === 'ben');
   if (e.target.name === 'lead' && e.target.closest('#setNotify')) { setPrefs({notify: {...notifyPrefs(), lead: Number(e.target.value) || 0}}); toast('Kaydedildi'); }
 });
@@ -1413,6 +1446,11 @@ document.addEventListener('submit', e => {
     if (fd.has('sav')) patch.savingsEur = Math.max(0, Number(str('sav')) || 0);
     closeSheet();
     upsert('metrics/main', patch, {}).then(ok => ok && toast('Kaydedildi'));
+  } else if (f.id === 'f-gold') {
+    const month = str('month'), raw = str('gr'), tgt = str('tgt'), v = raw === '' ? null : Number(raw);
+    if (!/^\d{4}-\d{2}$/.test(month) || (v != null && !Number.isFinite(v))) return;
+    closeSheet();
+    setPrefs({gold: {target: tgt === '' ? null : Math.max(0, Number(tgt) || 0), m: {...goldMonths(), [month]: v}}}).then(ok => ok && toast('Kaydedildi'));
   } else if (f.id === 'f-phase') {
     const title = str('title'), no = str('no'); if (!title || !no) return;
     const n = planMonths(), month = k => { const v = Math.round(Number(str(k))); return str(k) !== '' && v >= 1 && v <= n ? v : null; };
